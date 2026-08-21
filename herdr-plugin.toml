@@ -1,0 +1,14 @@
+name = "herdr-serve"
+version = "0.1.0"
+description = "Opt-in phone UI — live terminal relay for Herder agents"
+entrypoint = ["just", "serve", "-y"]
+
+[[actions]]
+id = "serve"
+label = "Start herdr-serve"
+command = ["just", "serve", "-y"]
+
+[[actions]]
+id = "serve-tunnel"
+label = "Start herdr-serve (tunnel)"
+command = ["just", "serve", "--mode", "tunnel", "-y"]
