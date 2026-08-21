@@ -1,8 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import Keyboard from "simple-keyboard";
-import "simple-keyboard/build/css/index.css";
 import {
   For,
   Show,
@@ -12,19 +10,6 @@ import {
   onMount,
 } from "solid-js";
 import { type Agent, listAgents } from "./api";
-
-/** Map simple-keyboard buttons → bytes for the PTY. */
-const KEY_BYTES: Record<string, string> = {
-  "{enter}": "\r",
-  "{bksp}": "\x7f",
-  "{tab}": "\t",
-  "{space}": " ",
-  "{esc}": "\x1b",
-  "{up}": "\x1b[A",
-  "{down}": "\x1b[B",
-  "{right}": "\x1b[C",
-  "{left}": "\x1b[D",
-};
 
 function wsURL(termID: string, cols: number, rows: number): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -36,6 +21,17 @@ function wsURL(termID: string, cols: number, rows: number): string {
   return `${proto}//${location.host}/ws/term?${q}`;
 }
 
+function prepareMobileInput(term: Terminal) {
+  const ta = term.textarea;
+  if (!ta) return;
+  ta.setAttribute("autocomplete", "off");
+  ta.setAttribute("autocorrect", "off");
+  ta.setAttribute("autocapitalize", "none");
+  ta.setAttribute("spellcheck", "false");
+  ta.setAttribute("enterkeyhint", "send");
+  ta.setAttribute("inputmode", "text");
+}
+
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal(""); // terminal_id
@@ -43,18 +39,14 @@ export default function App() {
   const [conn, setConn] = createSignal<"idle" | "connecting" | "live" | "dead">(
     "idle",
   );
-  const [kbOpen, setKbOpen] = createSignal(true);
   const [termReady, setTermReady] = createSignal(false);
 
   let termHost: HTMLDivElement | undefined;
-  let kbHost: HTMLDivElement | undefined;
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
-  let keyboard: Keyboard | undefined;
   let socket: WebSocket | undefined;
-  let shift = false;
-  let layoutName = "default";
   let reconnectTimer: number | undefined;
+  let touchScrollAcc = 0;
 
   const sendRaw = (data: string) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -75,6 +67,11 @@ export default function App() {
         rows,
       }),
     );
+  };
+
+  const sendScroll = (lines: number) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN || lines === 0) return;
+    socket.send(JSON.stringify({ type: "terminal.scroll", lines }));
   };
 
   const disconnect = () => {
@@ -122,7 +119,6 @@ export default function App() {
         term.write(new Uint8Array(ev.data));
         return;
       }
-      // text frames: ignore pongs / control
     };
 
     ws.onerror = () => {
@@ -132,7 +128,6 @@ export default function App() {
     ws.onclose = () => {
       setConn("dead");
       socket = undefined;
-      // Auto-reconnect if still selected
       if (selected() === termID) {
         reconnectTimer = window.setTimeout(() => connect(termID), 1200);
       }
@@ -150,6 +145,11 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  };
+
+  const refit = () => {
+    fit?.fit();
+    if (term) sendResize(term.cols, term.rows);
   };
 
   onMount(() => {
@@ -171,79 +171,63 @@ export default function App() {
     fit = new FitAddon();
     term.loadAddon(fit);
     term.open(termHost!);
+    prepareMobileInput(term);
     fit.fit();
     setTermReady(true);
 
-    // Physical / bluetooth keyboard → PTY
+    // Native / Bluetooth keyboard → PTY
     term.onData((data) => sendRaw(data));
 
-    // Wheel scroll → herdr terminal.scroll
+    // Desktop wheel → remote TUI scroll
     term.attachCustomWheelEventHandler((ev) => {
       if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-      const lines = Math.sign(ev.deltaY) * Math.min(5, Math.ceil(Math.abs(ev.deltaY) / 40));
-      if (lines !== 0) {
-        socket.send(JSON.stringify({ type: "terminal.scroll", lines }));
-      }
-      return true; // prevent xterm local scroll fighting relay
+      const lines =
+        Math.sign(ev.deltaY) *
+        Math.min(8, Math.max(1, Math.ceil(Math.abs(ev.deltaY) / 40)));
+      sendScroll(lines);
+      return true;
     });
 
-    const onResize = () => {
-      fit?.fit();
-      if (term) sendResize(term.cols, term.rows);
+    // Touch drag → remote TUI scroll (phones don't always synthesize wheel)
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      touchScrollAcc = 0;
     };
-    window.addEventListener("resize", onResize);
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      // Only treat as scroll when the remote app isn't eating mouse-drag;
+      // a one-finger vertical drag scrolls the TUI.
+      const touch = ev.touches[0];
+      // Use movement via changedTouches delta stored on element
+      const prev = (termHost as HTMLDivElement & { _ty?: number })._ty;
+      (termHost as HTMLDivElement & { _ty?: number })._ty = touch.clientY;
+      if (prev === undefined) return;
+      const dy = prev - touch.clientY;
+      touchScrollAcc += dy;
+      const linePx = 18;
+      if (Math.abs(touchScrollAcc) >= linePx) {
+        const lines = Math.trunc(touchScrollAcc / linePx);
+        touchScrollAcc -= lines * linePx;
+        sendScroll(lines);
+        ev.preventDefault();
+      }
+    };
+    const onTouchEnd = () => {
+      (termHost as HTMLDivElement & { _ty?: number })._ty = undefined;
+      touchScrollAcc = 0;
+      // Summon native keyboard on tap / after gesture
+      term?.focus();
+    };
 
-    keyboard = new Keyboard(kbHost!, {
-      theme: "hg-theme-default herdr-kb",
-      layoutName: "default",
-      display: {
-        "{bksp}": "⌫",
-        "{enter}": "↵",
-        "{shift}": "⇧",
-        "{space}": "space",
-        "{esc}": "esc",
-        "{numbers}": "123",
-        "{abc}": "ABC",
-        "{default}": "ABC",
-        "{up}": "↑",
-        "{down}": "↓",
-        "{left}": "←",
-        "{right}": "→",
-        "{ctrlc}": "⌃C",
-        "{tab}": "tab",
-      },
-      layout: {
-        default: [
-          "q w e r t y u i o p",
-          "a s d f g h j k l",
-          "{shift} z x c v b n m {bksp}",
-          "{numbers} {esc} {ctrlc} {space} {enter}",
-        ],
-        shift: [
-          "Q W E R T Y U I O P",
-          "A S D F G H J K L",
-          "{shift} Z X C V B N M {bksp}",
-          "{numbers} {esc} {ctrlc} {space} {enter}",
-        ],
-        numbers: [
-          "1 2 3 4 5 6 7 8 9 0",
-          "- / : ; ( ) $ & @ \"",
-          "{abc} . , ? ! ' {bksp}",
-          "{default} {left} {up} {down} {right} {enter}",
-        ],
-      },
-      buttonTheme: [
-        {
-          class: "hg-action",
-          buttons: "{enter} {bksp} {shift} {numbers} {abc} {default} {esc} {ctrlc}",
-        },
-      ],
-      onKeyPress: (button: string) => onKbKey(button),
-      preventMouseDownDefault: true,
-      stopMouseDownPropagation: true,
-      useMouseEvents: true,
-      useTouchEvents: true,
-    });
+    termHost!.addEventListener("touchstart", onTouchStart, { passive: true });
+    termHost!.addEventListener("touchmove", onTouchMove, { passive: false });
+    termHost!.addEventListener("touchend", onTouchEnd, { passive: true });
+
+    const onResize = () => refit();
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("scroll", onResize);
 
     void refreshAgents();
     const poll = setInterval(() => void refreshAgents(), 2500);
@@ -251,71 +235,34 @@ export default function App() {
     onCleanup(() => {
       clearInterval(poll);
       window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("scroll", onResize);
+      termHost?.removeEventListener("touchstart", onTouchStart);
+      termHost?.removeEventListener("touchmove", onTouchMove);
+      termHost?.removeEventListener("touchend", onTouchEnd);
       disconnect();
-      keyboard?.destroy();
       term?.dispose();
     });
   });
 
-  // Reconnect when selection changes (after xterm is mounted)
   createEffect(() => {
     const id = selected();
     if (id && termReady()) connect(id);
   });
-
-  createEffect(() => {
-    kbOpen();
-    queueMicrotask(() => {
-      fit?.fit();
-      if (term) sendResize(term.cols, term.rows);
-    });
-  });
-
-  const onKbKey = (button: string) => {
-    if (button === "{shift}") {
-      shift = !shift;
-      layoutName = shift ? "shift" : "default";
-      keyboard?.setOptions({ layoutName });
-      return;
-    }
-    if (button === "{numbers}") {
-      layoutName = "numbers";
-      keyboard?.setOptions({ layoutName });
-      return;
-    }
-    if (button === "{abc}" || button === "{default}") {
-      shift = false;
-      layoutName = "default";
-      keyboard?.setOptions({ layoutName });
-      return;
-    }
-    if (button === "{ctrlc}") {
-      sendRaw("\x03");
-      return;
-    }
-
-    const mapped = KEY_BYTES[button];
-    if (mapped !== undefined) {
-      sendRaw(mapped);
-      return;
-    }
-    if (button.length === 1) {
-      sendRaw(button);
-      if (shift) {
-        shift = false;
-        layoutName = "default";
-        keyboard?.setOptions({ layoutName });
-      }
-    }
-  };
 
   const current = () =>
     agents().find(
       (a) => a.terminal_id === selected() || a.pane_id === selected(),
     );
 
+  const agentLabel = (a: Agent) => {
+    const title = (a.terminal_title_stripped || "").trim();
+    if (title && title.toLowerCase() !== a.agent.toLowerCase()) return title;
+    return a.agent;
+  };
+
   return (
-    <div class="app" classList={{ "kb-open": kbOpen() }}>
+    <div class="app">
       <header class="top">
         <div class="brand">herdr-serve</div>
         <div class="top-right">
@@ -340,15 +287,17 @@ export default function App() {
               <button
                 type="button"
                 class="agent"
+                data-status={a.agent_status}
                 classList={{ active: id === selected() }}
                 onClick={() => setSelected(id)}
               >
                 <span class="dot" data-status={a.agent_status} />
+                <span class="name">{agentLabel(a)}</span>
                 <span class="meta">
-                  <span class="name">{a.terminal_title_stripped || a.agent}</span>
-                  <span class="id">
-                    {a.agent} · {a.pane_id}
+                  <span class="state" data-status={a.agent_status}>
+                    {a.agent_status}
                   </span>
+                  <span class="pane">{a.pane_id}</span>
                 </span>
               </button>
             );
@@ -366,22 +315,6 @@ export default function App() {
       <Show when={error()}>
         <div class="error">{error()}</div>
       </Show>
-
-      <div class="actions">
-        <button type="button" class="btn" onClick={() => sendRaw("y")}>
-          Approve (y)
-        </button>
-        <button type="button" class="btn danger" onClick={() => sendRaw("\x1b")}>
-          Esc
-        </button>
-        <button type="button" class="btn" onClick={() => setKbOpen((v) => !v)}>
-          {kbOpen() ? "Hide KB" : "Show KB"}
-        </button>
-      </div>
-
-      <div class="kb-wrap" classList={{ hidden: !kbOpen() }}>
-        <div class="simple-keyboard" ref={kbHost} />
-      </div>
     </div>
   );
 }

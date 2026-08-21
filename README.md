@@ -14,9 +14,8 @@ Wizard: network / tunnel / local → port → QR. Or pass flags.
 
 - Live PTY via `herdr terminal session control --takeover`
 - xterm.js on the phone (full ANSI / truecolor)
-- On-screen keyboard (simple-keyboard) — no native mobile keyboard
-- Keys go straight into the selected agent pane
-- Approve / Esc shortcuts
+- Native mobile / hardware keyboard → selected agent pane
+- No Herder plugin required — companion CLI works out of the box
 
 Not a full Herder TUI mirror. One agent at a time, steered from your phone.
 
@@ -48,7 +47,13 @@ just dev          # Go :7700 + Vite :5173 (WS proxied)
 
 ## Plugin (optional)
 
-`herdr-plugin.toml` exposes Start / Start (tunnel) actions. Still opt-in — nothing auto-starts.
+Not required. The companion CLI works alone:
+
+```bash
+./bin/herdr-serve serve
+```
+
+`herdr-plugin.toml` is only a convenience Start / Start (tunnel) launcher inside Herder. Nothing auto-starts.
 
 ## Origin
 
