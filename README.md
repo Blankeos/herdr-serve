@@ -13,8 +13,10 @@ Wizard: network / tunnel / local → port → QR. Or pass flags.
 ## What it is
 
 - Live PTY via `herdr terminal session control --takeover`
-- xterm.js on the phone (full ANSI / truecolor)
+- xterm.js on the phone (full ANSI / truecolor, JetBrainsMono Nerd Font)
 - Native mobile / hardware keyboard → selected agent pane
+- Configurable footer shortcut bar (Ctrl+C, Esc, arrows, …) — settings ⚙ next to the title, stored in browser localStorage with JSON import/export
+- Create agents from the phone UI (pick workspace → new tab → start crabcode / claude / …)
 - No Herder plugin required — companion CLI works out of the box
 
 Not a full Herder TUI mirror. One agent at a time, steered from your phone.

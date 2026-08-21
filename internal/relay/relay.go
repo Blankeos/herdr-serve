@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +34,17 @@ type frameMsg struct {
 }
 
 type clientMsg struct {
-	Type  string `json:"type"`
-	Text  string `json:"text,omitempty"`
-	Bytes string `json:"bytes,omitempty"`
-	Cols  int    `json:"cols,omitempty"`
-	Rows  int    `json:"rows,omitempty"`
-	Lines int    `json:"lines,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Bytes     string `json:"bytes,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Lines     int    `json:"lines,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Column    *int   `json:"column,omitempty"`
+	Row       *int   `json:"row,omitempty"`
+	Modifiers int    `json:"modifiers,omitempty"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -195,12 +201,44 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						})
 					}
 				case "terminal.scroll", "scroll":
-					if m.Lines != 0 {
-						_ = writeLine(map[string]any{
-							"type":  "terminal.scroll",
-							"lines": m.Lines,
-						})
+					direction := strings.ToLower(strings.TrimSpace(m.Direction))
+					lines := m.Lines
+					if direction == "" {
+						// Back-compat: signed lines from older UI builds.
+						if lines > 0 {
+							direction = "down"
+						} else if lines < 0 {
+							direction = "up"
+							lines = -lines
+						}
 					}
+					if lines < 0 {
+						lines = -lines
+					}
+					if direction != "up" && direction != "down" {
+						continue
+					}
+					if lines == 0 {
+						lines = 1
+					}
+					source := strings.ToLower(strings.TrimSpace(m.Source))
+					if source == "" {
+						source = "wheel"
+					}
+					payload := map[string]any{
+						"type":      "terminal.scroll",
+						"direction": direction,
+						"lines":     lines,
+						"source":    source,
+						"modifiers": m.Modifiers,
+					}
+					if m.Column != nil {
+						payload["column"] = *m.Column
+					}
+					if m.Row != nil {
+						payload["row"] = *m.Row
+					}
+					_ = writeLine(payload)
 				case "ping":
 					wctx, wcancel := context.WithTimeout(ctx, time.Second)
 					_ = ws.Write(wctx, websocket.MessageText, []byte(`{"type":"pong"}`))

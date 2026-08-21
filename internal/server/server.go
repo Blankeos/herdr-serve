@@ -41,12 +41,14 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
+	s.mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}/read", s.handleRead)
 	s.mux.HandleFunc("POST /api/agents/{id}/prompt", s.handlePrompt)
 	s.mux.HandleFunc("POST /api/agents/{id}/approve", s.handleApprove)
 	s.mux.HandleFunc("POST /api/agents/{id}/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("POST /api/agents/{id}/keys", s.handleKeys)
+	s.mux.HandleFunc("GET /api/workspaces", s.handleListWorkspaces)
 	s.mux.HandleFunc("GET /api/stream", s.handleStream)
 	s.mux.Handle("/ws/term", &relay.Handler{Herdr: s.herdr})
 
@@ -114,6 +116,87 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
+func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	workspaces, err := s.client.ListWorkspaces()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspaces": workspaces})
+}
+
+type createAgentBody struct {
+	WorkspaceID string `json:"workspace_id"`
+	Kind        string `json:"kind"`
+	Label       string `json:"label"`
+	Cwd         string `json:"cwd"`
+	Name        string `json:"name"`
+	Focus       bool   `json:"focus"`
+}
+
+func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var body createAgentBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	body.WorkspaceID = strings.TrimSpace(body.WorkspaceID)
+	body.Kind = strings.TrimSpace(strings.ToLower(body.Kind))
+	body.Label = strings.TrimSpace(body.Label)
+	body.Cwd = strings.TrimSpace(body.Cwd)
+	body.Name = strings.TrimSpace(body.Name)
+	if body.WorkspaceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspace_id required"})
+		return
+	}
+	if body.Kind == "" {
+		body.Kind = "crabcode"
+	}
+	if body.Label == "" {
+		body.Label = body.Kind
+	}
+	if body.Name == "" {
+		body.Name = body.Kind
+	}
+
+	created, err := s.client.CreateTab(body.WorkspaceID, body.Cwd, body.Label, body.Focus)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	paneID := created.RootPane.PaneID
+	if paneID == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "tab created without pane id"})
+		return
+	}
+
+	// Give the shell a beat to become interactive before launching.
+	time.Sleep(350 * time.Millisecond)
+
+	switch body.Kind {
+	case "crabcode":
+		if err := s.client.PaneRun(paneID, "crabcode"); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+	default:
+		if err := s.client.AgentStart(body.Name, body.Kind, paneID); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"kind":        body.Kind,
+		"pane_id":     paneID,
+		"terminal_id": created.RootPane.TerminalID,
+		"tab_id":      created.Tab.TabID,
+		"workspace_id": body.WorkspaceID,
+		"root_pane":   created.RootPane,
+	})
 }
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {

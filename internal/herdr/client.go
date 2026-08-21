@@ -8,74 +8,91 @@ import (
 	"strings"
 )
 
-// Client talks to a running Herder instance via the `herdr` CLI.
 type Client struct {
 	Bin string
 }
 
-func New(bin string) *Client {
-	if bin == "" {
-		bin = "herdr"
+func New(bin ...string) *Client {
+	b := "herdr"
+	if len(bin) > 0 && strings.TrimSpace(bin[0]) != "" {
+		b = strings.TrimSpace(bin[0])
 	}
-	return &Client{Bin: bin}
+	return &Client{Bin: b}
 }
 
 type Agent struct {
-	Agent                 string `json:"agent"`
-	AgentStatus           string `json:"agent_status"`
-	Cwd                   string `json:"cwd"`
-	Focused               bool   `json:"focused"`
-	ForegroundCwd         string `json:"foreground_cwd"`
-	PaneID                string `json:"pane_id"`
-	Revision              int    `json:"revision"`
-	StateChangeSeq        int    `json:"state_change_seq"`
-	TabID                 string `json:"tab_id"`
-	TerminalID            string `json:"terminal_id"`
-	TerminalTitle         string `json:"terminal_title"`
-	TerminalTitleStripped string `json:"terminal_title_stripped"`
-	WorkspaceID           string `json:"workspace_id"`
+	PaneID                 string `json:"pane_id"`
+	TerminalID             string `json:"terminal_id"`
+	WorkspaceID            string `json:"workspace_id"`
+	TabID                  string `json:"tab_id"`
+	Agent                  string `json:"agent"`
+	AgentStatus            string `json:"agent_status"`
+	Focused                bool   `json:"focused"`
+	Cwd                    string `json:"cwd"`
+	ForegroundCwd          string `json:"foreground_cwd"`
+	TerminalTitle          string `json:"terminal_title"`
+	TerminalTitleStripped  string `json:"terminal_title_stripped"`
+	LastOutputAt           any    `json:"last_output_at"`
 }
 
-type envelope struct {
-	ID     string          `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
+type Workspace struct {
+	WorkspaceID  string `json:"workspace_id"`
+	Label        string `json:"label"`
+	Number       int    `json:"number"`
+	Focused      bool   `json:"focused"`
+	AgentStatus  string `json:"agent_status"`
+	ActiveTabID  string `json:"active_tab_id"`
+	PaneCount    int    `json:"pane_count"`
+	TabCount     int    `json:"tab_count"`
 }
 
-func (c *Client) runJSON(args ...string) (json.RawMessage, error) {
+type TabCreated struct {
+	RootPane Agent `json:"root_pane"`
+	Tab      struct {
+		TabID       string `json:"tab_id"`
+		WorkspaceID string `json:"workspace_id"`
+		Label       string `json:"label"`
+		Number      int    `json:"number"`
+	} `json:"tab"`
+}
+
+func (c *Client) run(args ...string) (stdout []byte, err error) {
 	cmd := exec.Command(c.Bin, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
+			msg = strings.TrimSpace(out.String())
+		}
+		if msg == "" {
 			msg = err.Error()
 		}
-		// herdr sometimes still emits JSON on failure
-		if raw := extractJSON(stdout.Bytes()); len(raw) > 0 {
-			var env envelope
-			if json.Unmarshal(raw, &env) == nil && env.Error != nil {
-				return nil, fmt.Errorf("%s: %s", env.Error.Code, env.Error.Message)
-			}
-		}
-		return nil, fmt.Errorf("herdr %s: %s", strings.Join(args, " "), msg)
+		return out.Bytes(), fmt.Errorf("herdr %s: %s", strings.Join(args, " "), msg)
 	}
-	raw := extractJSON(stdout.Bytes())
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("herdr %s: empty response", strings.Join(args, " "))
+	return out.Bytes(), nil
+}
+
+func (c *Client) runJSON(args ...string) (json.RawMessage, error) {
+	stdout, err := c.run(args...)
+	if err != nil {
+		return nil, err
 	}
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
+	raw := extractJSON(stdout)
+	if raw == nil {
+		return nil, fmt.Errorf("herdr %s: no JSON in output", strings.Join(args, " "))
 	}
-	if env.Error != nil {
-		return nil, fmt.Errorf("%s: %s", env.Error.Code, env.Error.Message)
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
 	}
-	return env.Result, nil
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	if len(envelope.Result) == 0 {
+		return raw, nil
+	}
+	return envelope.Result, nil
 }
 
 func extractJSON(b []byte) []byte {
@@ -100,6 +117,20 @@ func (c *Client) ListAgents() ([]Agent, error) {
 	return out.Agents, nil
 }
 
+func (c *Client) ListWorkspaces() ([]Workspace, error) {
+	res, err := c.runJSON("workspace", "list")
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Workspaces []Workspace `json:"workspaces"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	return out.Workspaces, nil
+}
+
 func (c *Client) GetAgent(target string) (*Agent, error) {
 	res, err := c.runJSON("agent", "get", target)
 	if err != nil {
@@ -112,6 +143,51 @@ func (c *Client) GetAgent(target string) (*Agent, error) {
 		return nil, err
 	}
 	return &out.Agent, nil
+}
+
+// CreateTab creates a new tab (shell pane) in a workspace.
+func (c *Client) CreateTab(workspaceID, cwd, label string, focus bool) (*TabCreated, error) {
+	args := []string{"tab", "create", "--workspace", workspaceID}
+	if cwd != "" {
+		args = append(args, "--cwd", cwd)
+	}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	if focus {
+		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
+	}
+	res, err := c.runJSON(args...)
+	if err != nil {
+		return nil, err
+	}
+	var out TabCreated
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PaneRun runs a command in an existing pane (e.g. crabcode).
+// Some herdr builds exit 0 with empty stdout on success — treat that as OK.
+func (c *Client) PaneRun(paneID string, command ...string) error {
+	if paneID == "" || len(command) == 0 {
+		return fmt.Errorf("pane run requires pane id and command")
+	}
+	args := append([]string{"pane", "run", paneID}, command...)
+	_, err := c.run(args...)
+	return err
+}
+
+// AgentStart starts a supported agent kind in an existing shell pane.
+func (c *Client) AgentStart(name, kind, paneID string) error {
+	if name == "" {
+		name = kind
+	}
+	_, err := c.runJSON("agent", "start", name, "--kind", kind, "--pane", paneID)
+	return err
 }
 
 // Read returns recent terminal text for an agent pane.
@@ -148,13 +224,10 @@ func (c *Client) SendKeys(target string, keys ...string) error {
 	return err
 }
 
-// Interrupt sends Escape to the agent pane (works for crabcode / most CLIs).
 func (c *Client) Interrupt(target string) error {
 	return c.SendKeys(target, "esc")
 }
 
-// Approve sends a common approve key chord. Agents differ; Escape+y is not
-// universal, so we send "y" as the default approve for blocked prompts.
 func (c *Client) Approve(target string) error {
 	return c.SendKeys(target, "y")
 }
