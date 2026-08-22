@@ -48,6 +48,10 @@ clean:
   mkdir -p web/dist
   touch web/dist/.gitkeep
 
+# Keep npm README in sync with root README (npm publish surface)
+sync_readme:
+  cp README.md npm/README.md
+
 # Release: bump VERSION + npm, changelog, commit, tag, push
-tag:
+tag: sync_readme
   ./tag_and_release.sh

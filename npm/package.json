@@ -1,7 +1,7 @@
 {
   "name": "herdr-serve",
   "version": "0.0.0",
-  "description": "Opt-in phone UI — live terminal relay for Herder agents",
+  "description": "Remotely use herdr agents anywhere — no plugin, just works.",
   "bin": {
     "herdr-serve": "./bin.js"
   },
