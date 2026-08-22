@@ -18,8 +18,12 @@ import {
   authStatus,
   clearToken,
   createAgent,
+  createTab,
+  createWorkspace,
+  focusTab,
   getToken,
   listAgents,
+  listPanes,
   listWorkspaces,
   setToken,
 } from "./api";
@@ -42,7 +46,7 @@ import {
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
 import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { IconSettings, IconCaretDown, IconKeyboard } from "./icons";
+import { IconSettings, IconCaretDown, IconKeyboard, IconTerminal } from "./icons";
 import {
   SoftKeyboard,
   createDictation,
@@ -201,12 +205,24 @@ export default function App() {
   const [termReady, setTermReady] = createSignal(false);
 
   const [workspaces, setWorkspaces] = createSignal<Workspace[]>([]);
+  const [panes, setPanes] = createSignal<Agent[]>([]);
   const [createKind, setCreateKind] = createSignal("crabcode");
   const [createLabel, setCreateLabel] = createSignal("crabcode");
   const [creating, setCreating] = createSignal(false);
+  const [createWsOpen, setCreateWsOpen] = createSignal(false);
+  const [createWsLabel, setCreateWsLabel] = createSignal("");
+  const [createWsPath, setCreateWsPath] = createSignal("");
+  const [creatingWs, setCreatingWs] = createSignal(false);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
   const [drawerDragging, setDrawerDragging] = createSignal(false);
   const [drawerX, setDrawerX] = createSignal(0);
+  // Right peer page (Terminals): same follow-finger scrub as the left drawer.
+  const [rightOpen, setRightOpen] = createSignal(false);
+  const [rightDragging, setRightDragging] = createSignal(false);
+  const [rightX, setRightX] = createSignal(0);
+  const [lastAgentId, setLastAgentId] = createSignal("");
+  const [lastShellId, setLastShellId] = createSignal("");
+  let swipeLock = false; // blocks xterm click/SGR while scrubbing pages/drawer
   const [isMobile, setIsMobile] = createSignal(
     typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
   );
@@ -243,6 +259,7 @@ export default function App() {
   const [authBusy, setAuthBusy] = createSignal(false);
 
   let termHost: HTMLDivElement | undefined;
+  let dockEl: HTMLElement | undefined;
   let dictation: ReturnType<typeof createDictation> | undefined;
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
@@ -267,6 +284,7 @@ export default function App() {
       setPassword("");
       void refreshAgents();
       void refreshWorkspaces();
+      void refreshPanes();
     } catch (err) {
       clearToken();
       setAuthError(err instanceof Error ? err.message : String(err));
@@ -653,7 +671,11 @@ export default function App() {
     statusRefreshTimer = window.setTimeout(async () => {
       statusRefreshTimer = undefined;
       statusRefreshLast = Date.now();
-      await Promise.all([refreshAgents(true), refreshWorkspaces(true)]);
+      await Promise.all([
+        refreshAgents(true),
+        refreshWorkspaces(true),
+        refreshPanes(true),
+      ]);
     }, Math.max(0, wait));
   };
 
@@ -681,13 +703,87 @@ export default function App() {
     return changed;
   };
 
+  let panesInFlight = false;
+  let panesFails = 0;
+  const refreshPanes = async (silent = false): Promise<boolean> => {
+    if (panesInFlight) return false;
+    panesInFlight = true;
+    let changed = false;
+    try {
+      const list = await listPanes();
+      panesFails = 0;
+      setPanes((prev) => {
+        const next = reconcile(prev, list, agentSig);
+        changed = next !== prev;
+        return next;
+      });
+    } catch (e) {
+      if (!silent || ++panesFails >= 3) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      panesInFlight = false;
+    }
+    return changed;
+  };
+
   const agentId = (a: Agent) => a.terminal_id || a.pane_id;
 
   const agentLabel = (a: Agent) => {
     const title = (a.terminal_title_stripped || "").trim();
-    if (title && title.toLowerCase() !== a.agent.toLowerCase()) return title;
-    return a.agent;
+    const kind = (a.agent || "").trim();
+    if (title && (!kind || title.toLowerCase() !== kind.toLowerCase())) return title;
+    return kind || title || a.pane_id.slice(0, 8);
   };
+
+  const isShell = (p: Agent) => !(p.agent || "").trim();
+
+  const shellLabel = (p: Agent) => {
+    const tab = (p.tab_label || "").trim();
+    if (tab) return tab;
+    const title = (p.terminal_title_stripped || "").trim();
+    if (title) {
+      // Prefer basename of a path-looking title over the full user@host:cwd string.
+      const slash = title.lastIndexOf("/");
+      if (slash >= 0 && slash < title.length - 1) return title.slice(slash + 1);
+      return title;
+    }
+    const cwd = (p.cwd || "").trim();
+    if (cwd) {
+      const slash = cwd.lastIndexOf("/");
+      return slash >= 0 ? cwd.slice(slash + 1) || cwd : cwd;
+    }
+    return p.pane_id.slice(0, 8);
+  };
+
+  // Prefer the selected pane's workspace — herdr's workspace.focused often
+  // lags behind client-side selection, which made Terminals show an empty list.
+  const focusedWorkspaceId = createMemo(() => {
+    const sel = selected();
+    if (sel) {
+      const fromPane =
+        panes().find((p) => agentId(p) === sel)?.workspace_id ||
+        agents().find((a) => agentId(a) === sel)?.workspace_id ||
+        "";
+      if (fromPane) return fromPane;
+    }
+    const ws = workspaces();
+    const focused = ws.find((w) => w.focused);
+    if (focused) return focused.workspace_id;
+    return ws[0]?.workspace_id || "";
+  });
+
+  const pageWidth = () =>
+    typeof window !== "undefined" ? window.innerWidth || 1 : 1;
+
+  const shellsInWorkspace = (wsId: string) =>
+    panes().filter((p) => p.workspace_id === wsId && isShell(p));
+
+  const focusedShells = createMemo(() => {
+    const wsId = focusedWorkspaceId();
+    if (!wsId) return [] as Agent[];
+    return shellsInWorkspace(wsId);
+  });
 
   const agentCwd = (a: Agent | undefined): string => {
     if (!a) return "";
@@ -753,6 +849,10 @@ export default function App() {
   };
 
   const openDrawer = () => {
+    // Mutually exclusive with Terminals peer.
+    setRightOpen(false);
+    setRightDragging(false);
+    setRightX(0);
     setDrawerOpen(true);
     setDrawerDragging(false);
     setDrawerX(SIDEBAR_W);
@@ -800,7 +900,11 @@ export default function App() {
       scheduleStatusRefresh(400);
       for (let i = 0; i < 5; i++) {
         await new Promise((r) => setTimeout(r, 500));
-        await Promise.all([refreshAgents(true), refreshWorkspaces(true)]);
+        await Promise.all([
+          refreshAgents(true),
+          refreshWorkspaces(true),
+          refreshPanes(true),
+        ]);
         const id = res.terminal_id;
         if (id && agents().some((a) => a.terminal_id === id)) {
           selectAgent(id);
@@ -819,6 +923,133 @@ export default function App() {
     } finally {
       setCreating(false);
     }
+  };
+
+  const openCreateWorkspace = () => {
+    setCreateWsLabel("");
+    setCreateWsPath("");
+    setCreateWsOpen(true);
+    setError("");
+  };
+
+  const cancelCreateWorkspace = () => {
+    setCreateWsOpen(false);
+    setCreateWsLabel("");
+    setCreateWsPath("");
+  };
+
+  const submitCreateWorkspace = async () => {
+    if (creatingWs()) return;
+    const cwd = createWsPath().trim();
+    if (!cwd) {
+      setError("Path (cwd) is required");
+      return;
+    }
+    setCreatingWs(true);
+    setError("");
+    try {
+      await createWorkspace({
+        cwd,
+        label: createWsLabel().trim() || undefined,
+        focus: true,
+      });
+      cancelCreateWorkspace();
+      scheduleStatusRefresh(200);
+      await Promise.all([
+        refreshWorkspaces(true),
+        refreshAgents(true),
+        refreshPanes(true),
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreatingWs(false);
+    }
+  };
+
+  const selectShell = (pane: Agent) => {
+    const id = agentId(pane);
+    if (!id) return;
+    setLastShellId(id);
+    selectAgent(id);
+    if (pane.tab_id) void focusTab(pane.tab_id).catch(() => {});
+  };
+
+  const focusRememberedShell = () => {
+    const shells = focusedShells();
+    if (!shells.length) return;
+    const remembered = lastShellId();
+    const match =
+      (remembered && shells.find((p) => agentId(p) === remembered)) ||
+      shells.find((p) => p.focused) ||
+      shells[0];
+    if (match) selectShell(match);
+  };
+
+  const createOrFocusShell = async () => {
+    const wsId = focusedWorkspaceId();
+    if (!wsId) {
+      setError("No workspace focused");
+      return;
+    }
+    const shells = shellsInWorkspace(wsId);
+    if (shells.length) {
+      const remembered = lastShellId();
+      const focused =
+        (remembered && shells.find((p) => agentId(p) === remembered)) ||
+        shells.find((p) => p.focused) ||
+        shells[0];
+      if (focused) selectShell(focused);
+      return;
+    }
+    setError("");
+    try {
+      const res = await createTab({ workspace_id: wsId, focus: true });
+      const id = res.terminal_id || res.pane_id;
+      if (id) {
+        setLastShellId(id);
+        selectAgent(id);
+      }
+      scheduleStatusRefresh(200);
+      await refreshPanes(true);
+      if (id) selectAgent(id);
+      else if (res.pane_id) {
+        const match = panes().find((p) => p.pane_id === res.pane_id);
+        if (match) selectShell(match);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const openRight = () => {
+    // Remember the agent so swipe-back restores it.
+    const cur = selected();
+    if (cur) {
+      const isAgentPane = agents().some((a) => agentId(a) === cur);
+      if (isAgentPane) setLastAgentId(cur);
+    }
+    setDrawerOpen(false);
+    setDrawerDragging(false);
+    setDrawerX(0);
+    setRightOpen(true);
+    setRightX(pageWidth());
+    void refreshPanes(true).then(() => focusRememberedShell());
+  };
+
+  const closeRight = () => {
+    setRightOpen(false);
+    setRightDragging(false);
+    setRightX(0);
+    const prev = lastAgentId();
+    if (prev && agents().some((a) => agentId(a) === prev)) {
+      selectAgent(prev);
+    }
+  };
+
+  const toggleRight = () => {
+    if (rightOpen()) closeRight();
+    else openRight();
   };
 
   const persistShortcuts = (cfg: ShortcutConfig) => {
@@ -1250,6 +1481,7 @@ export default function App() {
 
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
+      if (swipeLock || drawerDragging() || rightDragging()) return;
       stopFling(); // grab the content — kill leftover momentum
       touchScrollAcc = 0;
       suppressClickFocus = false;
@@ -1267,6 +1499,11 @@ export default function App() {
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
+      if (swipeLock || drawerDragging() || rightDragging()) {
+        // Page/drawer scrub owns this gesture — don't scroll or leak SGR.
+        hostTouch._tm = undefined;
+        return;
+      }
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
       const touch = ev.touches[0];
@@ -1323,7 +1560,7 @@ export default function App() {
         startFling(vel, flingX0, flingY0);
         return;
       }
-      if (drawerOpen()) return;
+      if (drawerOpen() || rightOpen() || swipeLock) return;
       if (sendMouseClick(x, y)) {
         ev.preventDefault();
       } else if (!isMobile()) {
@@ -1335,14 +1572,15 @@ export default function App() {
     // Mobile: ignore synthetic mouseup after touchend (already handled there).
     const onMouseUp = (ev: MouseEvent) => {
       if (ev.button !== 0) return;
+      if (swipeLock || rightDragging() || drawerDragging()) return;
       if (isMobile()) {
         if (performance.now() < ignoreMouseUntil) return;
-        if (!drawerOpen() && !suppressClickFocus) {
+        if (!drawerOpen() && !rightOpen() && !suppressClickFocus) {
           sendMouseClick(ev.clientX, ev.clientY);
         }
         return;
       }
-      if (!suppressClickFocus && !drawerOpen()) {
+      if (!suppressClickFocus && !drawerOpen() && !rightOpen()) {
         sendMouseClick(ev.clientX, ev.clientY);
       }
       term?.focus();
@@ -1370,6 +1608,7 @@ export default function App() {
       if (!authRequired()) {
         void refreshAgents();
         void refreshWorkspaces();
+        void refreshPanes();
       }
     });
     // No background polling and no visibility/drawer auto-refresh. Status
@@ -1380,10 +1619,20 @@ export default function App() {
     const onMq = () => {
       const mobile = mq.matches;
       setIsMobile(mobile);
-      if (!mobile) closeDrawer();
+      if (!mobile) {
+        closeDrawer();
+        closeRight();
+      }
     };
     onMq();
     mq.addEventListener("change", onMq);
+
+    // Relative 3-way scrub from anywhere (not edge-anchored):
+    //   Sidebar  ←swipe-right←  Agents  ←swipe-left←  Terminals
+    // Non-passive so we can preventDefault and stop xterm from eating the swipe
+    // (which was leaking SGR mouse sequences like `0;31;27M` into the shell).
+    type ScrubMode = "none" | "left" | "right";
+    let scrubMode: ScrubMode = "none";
 
     const gesture = new DragGesture(
       document.documentElement,
@@ -1395,50 +1644,124 @@ export default function App() {
         cancel,
         event,
         intentional,
+        first,
       }) => {
         if (!mq.matches || settingsOpen()) {
           cancel();
+          scrubMode = "none";
+          swipeLock = false;
           return;
         }
         const target = event?.target as Element | null;
         if (
           target?.closest(
-            ".sidebar, .sheet, .sheet-backdrop, .inline-create, .soft-keyboard, .dock, input, textarea, select",
+            ".sidebar, .right-panel, .sheet, .sheet-backdrop, .inline-create, .inline-create-ws, .soft-keyboard, .dock, .terminals-chips, input, textarea, select",
           )
         ) {
           cancel();
+          scrubMode = "none";
           return;
         }
 
-        const open = drawerOpen();
-        // Closed: only drag right opens. Open: any horizontal updates position.
-        if (!open && mx < 0) {
+        const w = pageWidth();
+        const leftOpen = drawerOpen();
+        const rOpen = rightOpen();
+
+        if (first) scrubMode = "none";
+
+        // Resolve which side this gesture owns. Relative to current page:
+        // - On Agents: swipe-right (mx>0) → left sidebar; swipe-left (mx<0) → Terminals
+        // - On Terminals: any horizontal scrub closes/opens Terminals (right mode)
+        // - On Sidebar: any horizontal scrub closes/opens sidebar (left mode)
+        // Direction is picked from anywhere — no left/right edge anchoring.
+        if (scrubMode === "none") {
+          if (leftOpen) {
+            scrubMode = "left";
+          } else if (rOpen) {
+            scrubMode = "right";
+          } else if (intentional) {
+            scrubMode = mx > 0 ? "left" : mx < 0 ? "right" : "none";
+          }
+        }
+
+        if (scrubMode === "none") {
+          if (!intentional) return;
           cancel();
           return;
         }
         if (!intentional) return;
 
-        const start = open ? SIDEBAR_W : 0;
-        const next = Math.max(0, Math.min(SIDEBAR_W, start + mx));
+        // Mutually exclusive: opening one side closes the other.
+        if (scrubMode === "left" && (rOpen || rightDragging())) {
+          setRightOpen(false);
+          setRightDragging(false);
+          setRightX(0);
+        }
+        if (scrubMode === "right" && (leftOpen || drawerDragging())) {
+          setDrawerOpen(false);
+          setDrawerDragging(false);
+          setDrawerX(0);
+        }
 
-        if (active) {
-          // Don't open soft kb from the same gesture that dragged the drawer.
-          suppressClickFocus = true;
-          setDrawerDragging(true);
-          setDrawerX(next);
+        if (scrubMode === "left") {
+          const start = leftOpen ? SIDEBAR_W : 0;
+          const next = Math.max(0, Math.min(SIDEBAR_W, start + mx));
+          if (active) {
+            suppressClickFocus = true;
+            swipeLock = true;
+            event?.preventDefault?.();
+            setDrawerDragging(true);
+            setDrawerX(next);
+            return;
+          }
+          setDrawerDragging(false);
+          swipeLock = false;
+          scrubMode = "none";
+          const flickOpen = vx > 0.45 && dx > 0;
+          const flickClose = vx > 0.45 && dx < 0;
+          if (leftOpen) {
+            if (flickClose || next < SIDEBAR_W * 0.6) closeDrawer();
+            else openDrawer();
+          } else if (flickOpen || next > SIDEBAR_W * 0.4) {
+            openDrawer();
+          } else {
+            closeDrawer();
+          }
           return;
         }
 
-        setDrawerDragging(false);
-        const flickOpen = vx > 0.45 && dx > 0;
-        const flickClose = vx > 0.45 && dx < 0;
-        if (open) {
-          if (flickClose || next < SIDEBAR_W * 0.6) closeDrawer();
-          else openDrawer();
-        } else if (flickOpen || next > SIDEBAR_W * 0.4) {
-          openDrawer();
+        // scrubMode === "right" — full-bleed Terminals peer page.
+        const start = rOpen ? w : 0;
+        // Finger left (mx < 0) reveals Terminals from the right.
+        const next = Math.max(0, Math.min(w, start - mx));
+        if (active) {
+          suppressClickFocus = true;
+          swipeLock = true;
+          event?.preventDefault?.();
+          if (!rightDragging()) {
+            const cur = selected();
+            if (cur && agents().some((a) => agentId(a) === cur)) {
+              setLastAgentId(cur);
+            }
+            void refreshPanes(true);
+          }
+          setRightDragging(true);
+          setRightX(next);
+          return;
+        }
+
+        setRightDragging(false);
+        swipeLock = false;
+        scrubMode = "none";
+        const flickOpen = vx > 0.45 && dx < 0; // flick left → open Terminals
+        const flickClose = vx > 0.45 && dx > 0; // flick right → back to Agents
+        if (rOpen) {
+          if (flickClose || next < w * 0.6) closeRight();
+          else openRight();
+        } else if (flickOpen || next > w * 0.4) {
+          openRight();
         } else {
-          closeDrawer();
+          closeRight();
         }
       },
       {
@@ -1446,9 +1769,49 @@ export default function App() {
         filterTaps: true,
         threshold: 12,
         pointer: { touch: true },
-        eventOptions: { passive: true },
+        eventOptions: { passive: false },
       },
     );
+
+    // Vertical swipe on the keybar/dock toggles the soft keyboard.
+    // Only fires when vertical movement dominates so horizontal chip scroll still works.
+    const KEYBAR_SWIPE = 40;
+    const keybarGesture = dockEl
+      ? new DragGesture(
+          dockEl,
+          ({
+            movement: [mx, my],
+            velocity: [, vy],
+            direction: [, dy],
+            cancel,
+            intentional,
+            active,
+          }) => {
+            // Soft KB swipe works on all three relative pages (sidebar / agents / terminals).
+            if (!isMobile() || settingsOpen()) {
+              cancel();
+              return;
+            }
+            if (!intentional || active) return;
+            if (Math.abs(my) <= Math.abs(mx)) return;
+
+            const flickDown = vy > 0.35 && dy > 0;
+            const flickUp = vy > 0.35 && dy < 0;
+            if (flickDown || my >= KEYBAR_SWIPE) {
+              closeSoftKeyboard();
+            } else if (flickUp || my <= -KEYBAR_SWIPE) {
+              openSoftKeyboard();
+            }
+          },
+          {
+            axis: "y",
+            filterTaps: true,
+            threshold: 14,
+            pointer: { touch: true },
+            eventOptions: { passive: true },
+          },
+        )
+      : undefined;
 
     // Extra iOS guard: pinch / gesture zoom on chrome UI.
     const blockGesture = (e: Event) => e.preventDefault();
@@ -1464,6 +1827,7 @@ export default function App() {
       if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer);
       mq.removeEventListener("change", onMq);
       gesture.destroy();
+      keybarGesture?.destroy();
       dictation?.stop();
       document.removeEventListener("gesturestart", blockGesture);
       document.removeEventListener("gesturechange", blockGesture);
@@ -1480,10 +1844,8 @@ export default function App() {
     });
   });
 
-  createEffect(() => {
-    // Drawer open → dismiss soft kb so it doesn't fight the sidebar.
-    if (drawerOpen()) closeSoftKeyboard();
-  });
+  // Soft keyboard stays open across Sidebar ↔ Agents ↔ Terminals.
+  // (Only desktop resize / explicit dismiss closes it.)
 
   createEffect(() => {
     // Desktop resize → soft kb off.
@@ -1536,15 +1898,27 @@ export default function App() {
     });
   });
 
-  const current = () =>
-    agents().find(
-      (a) => a.terminal_id === selected() || a.pane_id === selected(),
+  const current = () => {
+    const sel = selected();
+    return (
+      agents().find((a) => a.terminal_id === sel || a.pane_id === sel) ||
+      panes().find((p) => p.terminal_id === sel || p.pane_id === sel)
     );
+  };
 
-  const shellStyle = () =>
-    drawerDragging()
-      ? { "--drawer-x": `${drawerX()}px` }
-      : undefined;
+  // Left drawer + right Terminals scrub share one transform pair.
+  // Terminal counters the right slide so it stays on-screen while chrome scrubs.
+  const shellStyle = () => {
+    const style: Record<string, string> = {};
+    if (drawerDragging()) style["--drawer-x"] = `${drawerX()}px`;
+    else if (drawerOpen()) style["--drawer-x"] = `${SIDEBAR_W}px`;
+    else style["--drawer-x"] = "0px";
+
+    if (rightDragging()) style["--right-x"] = `${rightX()}px`;
+    else if (rightOpen()) style["--right-x"] = "100vw";
+    else style["--right-x"] = "0px";
+    return style;
+  };
 
   return (
     <div class="app">
@@ -1575,14 +1949,64 @@ export default function App() {
         class="shell"
         classList={{
           "drawer-open": drawerOpen(),
-          dragging: drawerDragging(),
+          "right-open": rightOpen(),
+          dragging: drawerDragging() || rightDragging(),
         }}
         style={shellStyle() as Record<string, string> | undefined}
       >
         <aside class="sidebar" aria-label="Workspaces">
           <div class="sidebar-brand">
-            <div class="sidebar-brand-title">herdr-serve</div>
-            <div class="sidebar-brand-sub">workspaces</div>
+            <div class="sidebar-brand-row">
+              <div class="sidebar-brand-text">
+                <div class="sidebar-brand-title">herdr-serve</div>
+                <div class="sidebar-brand-sub">workspaces</div>
+              </div>
+              <button
+                type="button"
+                class="workspace-add"
+                aria-label="New workspace"
+                title="New workspace"
+                onClick={() =>
+                  createWsOpen() ? cancelCreateWorkspace() : openCreateWorkspace()
+                }
+              >
+                +
+              </button>
+            </div>
+            <Show when={createWsOpen()}>
+              <div class="inline-create inline-create-ws">
+                <input
+                  type="text"
+                  value={createWsLabel()}
+                  placeholder="Label"
+                  onInput={(e) => setCreateWsLabel(e.currentTarget.value)}
+                />
+                <input
+                  type="text"
+                  value={createWsPath()}
+                  placeholder="Path (cwd)"
+                  onInput={(e) => setCreateWsPath(e.currentTarget.value)}
+                />
+                <div class="inline-create-actions">
+                  <button
+                    type="button"
+                    class="sheet-secondary"
+                    onClick={() => cancelCreateWorkspace()}
+                    disabled={creatingWs()}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    class="sheet-primary"
+                    onClick={() => void submitCreateWorkspace()}
+                    disabled={creatingWs() || !createWsPath().trim()}
+                  >
+                    {creatingWs() ? "Creating…" : "Create"}
+                  </button>
+                </div>
+              </div>
+            </Show>
           </div>
           <div class="sidebar-scroll">
             <For each={workspaceGroups()}>
@@ -1715,6 +2139,50 @@ export default function App() {
           aria-hidden={drawerOpen() ? "false" : "true"}
         />
 
+        {/* Full-bleed Terminals peer — scrub-follows finger from the right. */}
+        <aside class="right-panel" aria-label="Terminals">
+          <header class="topbar right-topbar">
+            <div class="topbar-title">Terminals</div>
+            <button
+              type="button"
+              class="topbar-icon-btn"
+              title="Back to agents"
+              aria-label="Back to agents"
+              onClick={() => closeRight()}
+            >
+              ←
+            </button>
+          </header>
+          <div class="terminals-chips" aria-label="Shell panes">
+            <div class="terminals-chips-scroll">
+              <For each={focusedShells()}>
+                {(p) => {
+                  const id = agentId(p);
+                  return (
+                    <button
+                      type="button"
+                      class="term-chip"
+                      classList={{ active: id === selected() }}
+                      onClick={() => selectShell(p)}
+                    >
+                      {shellLabel(p)}
+                    </button>
+                  );
+                }}
+              </For>
+              <button
+                type="button"
+                class="term-chip term-chip-add"
+                title="New or focus shell"
+                aria-label="New or focus shell"
+                onClick={() => void createOrFocusShell()}
+              >
+                +
+              </button>
+            </div>
+          </div>
+        </aside>
+
         <div class="main main-shift">
           <header class="topbar">
             <button
@@ -1725,6 +2193,7 @@ export default function App() {
             >
               ☰
             </button>
+            <div class="topbar-title">Agents</div>
             <div class="top-right">
               <span class="conn" data-conn={conn()}>
                 {conn()}
@@ -1745,6 +2214,16 @@ export default function App() {
                   </div>
                 )}
               </Show>
+              <button
+                type="button"
+                class="topbar-icon-btn"
+                classList={{ active: rightOpen() }}
+                title={rightOpen() ? "Show agents" : "Show terminals"}
+                aria-label={rightOpen() ? "Show agents" : "Show terminals"}
+                onClick={() => toggleRight()}
+              >
+                <IconTerminal class="topbar-icon" />
+              </button>
             </div>
           </header>
 
@@ -1752,11 +2231,15 @@ export default function App() {
             <div class="error">{error()}</div>
           </Show>
 
+          {/*
+            Terminal stays put: .term-wrap counters --right-x so Agents chrome
+            and the Terminals panel scrub past a stationary terminal.
+          */}
           <div class="term-wrap">
             <div class="term" ref={termHost} />
           </div>
 
-          <nav class="dock" aria-label="Shortcut keys">
+          <nav class="dock" aria-label="Shortcut keys" ref={dockEl}>
             <div class="keybar-scroll">
               <Show when={isMobile()}>
                 <button

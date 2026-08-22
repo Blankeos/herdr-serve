@@ -33,6 +33,18 @@ type Agent struct {
 	TerminalTitle         string `json:"terminal_title"`
 	TerminalTitleStripped string `json:"terminal_title_stripped"`
 	LastOutputAt          any    `json:"last_output_at"`
+	// TabLabel is the herdr tab name (from `herdr tab list`); not on pane list.
+	TabLabel string `json:"tab_label,omitempty"`
+}
+
+type Tab struct {
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Number      int    `json:"number"`
+	Focused     bool   `json:"focused"`
+	AgentStatus string `json:"agent_status"`
+	PaneCount   int    `json:"pane_count"`
 }
 
 type Workspace struct {
@@ -169,6 +181,95 @@ func (c *Client) CreateTab(workspaceID, cwd, label string, focus bool) (*TabCrea
 		return nil, err
 	}
 	return &out, nil
+}
+
+// CreateWorkspace creates a new herdr workspace at cwd.
+func (c *Client) CreateWorkspace(cwd, label string, focus bool) (*Workspace, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return nil, fmt.Errorf("cwd required")
+	}
+	args := []string{"workspace", "create", "--cwd", cwd}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	if focus {
+		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
+	}
+	res, err := c.runJSON(args...)
+	if err != nil {
+		return nil, err
+	}
+	// Response may be {workspace: {...}} or the workspace object itself.
+	var wrapped struct {
+		Workspace *Workspace `json:"workspace"`
+	}
+	if err := json.Unmarshal(res, &wrapped); err == nil && wrapped.Workspace != nil {
+		return wrapped.Workspace, nil
+	}
+	var out Workspace
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	if out.WorkspaceID == "" {
+		return nil, fmt.Errorf("workspace created without id: %s", string(res))
+	}
+	return &out, nil
+}
+
+// FocusTab focuses a tab by id (e.g. "wX:t1").
+func (c *Client) FocusTab(tabID string) error {
+	if strings.TrimSpace(tabID) == "" {
+		return fmt.Errorf("tab id required")
+	}
+	_, err := c.run("tab", "focus", tabID)
+	return err
+}
+
+// ListTabs returns every tab (includes user-assigned labels like "1","2","lg").
+func (c *Client) ListTabs() ([]Tab, error) {
+	res, err := c.runJSON("tab", "list")
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Tabs []Tab `json:"tabs"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	return out.Tabs, nil
+}
+
+// ListPanes returns every pane (agents and plain shells), with TabLabel filled
+// from `herdr tab list` so UI chips can show the names you set in herdr.
+func (c *Client) ListPanes() ([]Agent, error) {
+	res, err := c.runJSON("pane", "list")
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Panes []Agent `json:"panes"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, err
+	}
+	tabs, err := c.ListTabs()
+	if err == nil {
+		byID := make(map[string]string, len(tabs))
+		for _, t := range tabs {
+			if t.TabID != "" && t.Label != "" {
+				byID[t.TabID] = t.Label
+			}
+		}
+		for i := range out.Panes {
+			if label, ok := byID[out.Panes[i].TabID]; ok {
+				out.Panes[i].TabLabel = label
+			}
+		}
+	}
+	return out.Panes, nil
 }
 
 // PaneRun runs a command in an existing pane (e.g. crabcode).

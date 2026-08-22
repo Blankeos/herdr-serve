@@ -3,7 +3,8 @@ export type Agent = {
   terminal_id: string;
   workspace_id: string;
   tab_id: string;
-  agent: string;
+  /** Empty / missing for plain shell panes. */
+  agent?: string;
   agent_status: string;
   focused: boolean;
   cwd: string;
@@ -11,6 +12,8 @@ export type Agent = {
   terminal_title?: string;
   terminal_title_stripped?: string;
   last_output_at?: string | null;
+  /** Herdr tab name (e.g. "1", "2", "lg") from `herdr tab list`. */
+  tab_label?: string;
 };
 
 export type Workspace = {
@@ -124,6 +127,63 @@ export async function createAgent(
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+export type CreateWorkspaceRequest = {
+  cwd: string;
+  label?: string;
+  focus?: boolean;
+};
+
+export type CreateWorkspaceResponse = {
+  ok: boolean;
+  workspace: Workspace;
+};
+
+export async function createWorkspace(
+  req: CreateWorkspaceRequest,
+): Promise<CreateWorkspaceResponse> {
+  return json<CreateWorkspaceResponse>("/api/workspaces", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export type CreateTabRequest = {
+  workspace_id: string;
+  cwd?: string;
+  label?: string;
+  focus?: boolean;
+};
+
+export type CreateTabResponse = {
+  ok: boolean;
+  pane_id: string;
+  terminal_id: string;
+  tab_id: string;
+  workspace_id: string;
+  root_pane?: Agent;
+};
+
+export async function createTab(
+  req: CreateTabRequest,
+): Promise<CreateTabResponse> {
+  return json<CreateTabResponse>("/api/tabs", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function focusTab(tabId: string): Promise<{ ok: boolean }> {
+  return json<{ ok: boolean }>(
+    `/api/tabs/${encodeURIComponent(tabId)}/focus`,
+    { method: "POST" },
+  );
+}
+
+export async function listPanes(): Promise<Agent[]> {
+  const data = await json<{ panes: Agent[] }>("/api/panes");
+  return data.panes || [];
 }
 
 export async function promptAgent(id: string, text: string) {

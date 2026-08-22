@@ -108,6 +108,10 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/agents/{id}/interrupt", s.requireAuth(http.HandlerFunc(s.handleInterrupt)))
 	s.mux.Handle("POST /api/agents/{id}/keys", s.requireAuth(http.HandlerFunc(s.handleKeys)))
 	s.mux.Handle("GET /api/workspaces", s.requireAuth(http.HandlerFunc(s.handleListWorkspaces)))
+	s.mux.Handle("POST /api/workspaces", s.requireAuth(http.HandlerFunc(s.handleCreateWorkspace)))
+	s.mux.Handle("GET /api/panes", s.requireAuth(http.HandlerFunc(s.handleListPanes)))
+	s.mux.Handle("POST /api/tabs", s.requireAuth(http.HandlerFunc(s.handleCreateTab)))
+	s.mux.Handle("POST /api/tabs/{id}/focus", s.requireAuth(http.HandlerFunc(s.handleFocusTab)))
 	s.mux.Handle("GET /api/project-favicon", s.requireAuth(http.HandlerFunc(s.handleProjectFavicon)))
 	s.mux.Handle("/ws/term", s.requireAuth(&relay.Handler{Herdr: s.herdr}))
 
@@ -329,6 +333,89 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		"workspace_id": body.WorkspaceID,
 		"root_pane":    created.RootPane,
 	})
+}
+
+type createWorkspaceBody struct {
+	Cwd   string `json:"cwd"`
+	Label string `json:"label"`
+	Focus bool   `json:"focus"`
+}
+
+func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	var body createWorkspaceBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	body.Cwd = strings.TrimSpace(body.Cwd)
+	body.Label = strings.TrimSpace(body.Label)
+	if body.Cwd == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cwd required"})
+		return
+	}
+	ws, err := s.client.CreateWorkspace(body.Cwd, body.Label, body.Focus)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": ws})
+}
+
+type createTabBody struct {
+	WorkspaceID string `json:"workspace_id"`
+	Cwd         string `json:"cwd"`
+	Label       string `json:"label"`
+	Focus       bool   `json:"focus"`
+}
+
+func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
+	var body createTabBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	body.WorkspaceID = strings.TrimSpace(body.WorkspaceID)
+	body.Cwd = strings.TrimSpace(body.Cwd)
+	body.Label = strings.TrimSpace(body.Label)
+	if body.WorkspaceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspace_id required"})
+		return
+	}
+	created, err := s.client.CreateTab(body.WorkspaceID, body.Cwd, body.Label, body.Focus)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"pane_id":      created.RootPane.PaneID,
+		"terminal_id":  created.RootPane.TerminalID,
+		"tab_id":       created.Tab.TabID,
+		"workspace_id": body.WorkspaceID,
+		"root_pane":    created.RootPane,
+	})
+}
+
+func (s *Server) handleFocusTab(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tab id required"})
+		return
+	}
+	if err := s.client.FocusTab(id); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleListPanes(w http.ResponseWriter, r *http.Request) {
+	panes, err := s.client.ListPanes()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"panes": panes})
 }
 
 func (s *Server) handleProjectFavicon(w http.ResponseWriter, r *http.Request) {
