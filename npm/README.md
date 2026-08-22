@@ -19,13 +19,16 @@ Requires a running Herder (`herdr` on PATH). Tunnel mode also needs `cloudflared
 ## Quick start
 
 ```bash
+herdr-serve serve -y              # network 0.0.0.0:7700 + QR
+# Scan the QR on your phone (that's it! 🎉)
+
+# Or...
 herdr-serve serve                 # wizard
-herdr-serve serve -y              # defaults (network :7700)
 herdr-serve serve --mode tunnel   # trycloudflare
 herdr-serve serve --mode network --port 8080
 ```
 
-Wizard: network / tunnel / local → port → QR. Open the URL on your phone.
+Defaults already bind `0.0.0.0` and print a LAN QR. Wizard: network / tunnel / local → port → QR.
 
 ## Modes
 
