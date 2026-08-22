@@ -31,10 +31,40 @@ export type DomSoftKeyboard = {
   destroy: () => void;
 };
 
+type ActivePress = {
+  el: HTMLElement;
+  key: SoftKeyDef;
+  ghost: HTMLElement | null;
+  /** Backspace already fired its initial delete for this finger. */
+  backspaceArmed: boolean;
+  /** Finger slid off the keyboard — release commits nothing. */
+  cancelled: boolean;
+  /** Last key we successfully highlighted — used if touchend jitters off-key. */
+  lastGoodKey: SoftKeyDef;
+  lastGoodEl: HTMLElement;
+};
+
+type KeyHit = {
+  el: HTMLElement;
+  row: number;
+  col: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
 /**
- * Pure-DOM iOS soft keyboard. No framework VDOM — only host callbacks.
- * Presses resolve against live layout state so rAF-deferred rebuilds
- * never drop or mis-case fast multi-taps.
+ * Pure-DOM iOS soft keyboard — Apple slide-to-select feel.
+ *
+ * Letter / mod keys:
+ *   touchstart → highlight only
+ *   touchmove  → highlight follows thumb (c→v, j→k)
+ *   touchend   → commit the key under the finger
+ *
+ * Backspace is the exception (Apple-like):
+ *   fires on press + hold-repeat while finger stays on ⌫
+ *   sliding off cancels repeat; releasing on another key commits that key
  */
 export function createDomSoftKeyboard(
   opts: DomSoftKeyboardOptions = {
@@ -59,11 +89,30 @@ export function createDomSoftKeyboard(
 
   let repeatTimer: number | undefined;
   let repeatEvery: number | undefined;
-  let ghostEl: HTMLElement | null = null;
   let renderRaf = 0;
+  let renderPending = false;
+  let hitCacheRaf = 0;
   let destroyed = false;
-  /** Row/col stamped on each button; resolves against live `layout`. */
-  let pressedEl: HTMLElement | null = null;
+
+  const active = new Map<number, ActivePress>();
+  /**
+   * Cross-event dedupe (pointer ↔ touch ↔ click).
+   * iOS sometimes delivers only one of touchstart / pointerdown / click for a
+   * sequential tap — we accept whichever arrives first and ignore duplicates.
+   */
+  let lastBeginX = 0;
+  let lastBeginY = 0;
+  let lastBeginAt = 0;
+  let lastCommitKey: SoftKeyDef | null = null;
+  let lastCommitAt = 0;
+  let lastCommitX = 0;
+  let lastCommitY = 0;
+  let lastTouchEndX = 0;
+  let lastTouchEndY = 0;
+  let lastTouchEndAt = 0;
+  let hitCache: KeyHit[] = [];
+  let hitCacheAt = 0;
+  let nextSyntheticId = -1;
 
   const root = document.createElement("div");
   root.className = `soft-keyboard${opts.className ? ` ${opts.className}` : ""}`;
@@ -90,20 +139,77 @@ export function createDomSoftKeyboard(
     }
   };
 
-  const clearGhost = () => {
-    if (ghostEl) {
-      ghostEl.classList.remove("sk-pressed");
-      if (ghostEl.classList.contains("sk-backspace")) setBackspaceIcon(ghostEl, false);
-      ghostEl = null;
-    }
+  const setBackspaceIcon = (el: HTMLElement, filled: boolean) => {
+    const label = el.querySelector(".sk-label");
+    if (label) label.innerHTML = filled ? BACKSPACE_FILL : BACKSPACE_OUTLINE;
   };
 
-  /** Coalesce layout rebuilds so fast taps never race a DOM swap. */
+  const findCharButton = (value: string): HTMLElement | null => {
+    const target = value.toLowerCase();
+    const buttons = rowsEl.querySelectorAll<HTMLElement>("button.sk-key[data-sk-char]");
+    for (let i = 0; i < buttons.length; i++) {
+      const b = buttons[i]!;
+      if ((b.dataset.skChar ?? "").toLowerCase() === target) return b;
+    }
+    return null;
+  };
+
+  const findActionButton = (id: SoftKeyId): HTMLElement | null => {
+    const cls = id === "backspace" ? "sk-backspace" : `sk-${id}`;
+    return rowsEl.querySelector<HTMLElement>(`button.${cls}`);
+  };
+
+  const isBackspaceKey = (key: SoftKeyDef): boolean =>
+    (key.kind === "action" && key.id === "backspace") ||
+    (key.kind === "spacer" && key.actionAlias === "backspace");
+
+  const rebuildHitCache = () => {
+    if (destroyed || root.hidden) {
+      hitCache = [];
+      return;
+    }
+    const nodes = rowsEl.querySelectorAll<HTMLElement>(
+      "button.sk-key, button.sk-spacer-hit",
+    );
+    const next: KeyHit[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i]!;
+      const row = Number(el.dataset.skRow);
+      const col = Number(el.dataset.skCol);
+      if (!Number.isFinite(row) || !Number.isFinite(col)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      next.push({
+        el,
+        row,
+        col,
+        left: r.left,
+        right: r.right,
+        top: r.top,
+        bottom: r.bottom,
+      });
+    }
+    hitCache = next;
+    hitCacheAt = performance.now();
+  };
+
+  const scheduleHitCache = () => {
+    if (hitCacheRaf || destroyed) return;
+    hitCacheRaf = window.requestAnimationFrame(() => {
+      hitCacheRaf = 0;
+      rebuildHitCache();
+    });
+  };
+
   const scheduleRender = () => {
-    if (renderRaf || destroyed) return;
+    if (destroyed) return;
+    renderPending = true;
+    if (active.size > 0) return;
+    if (renderRaf) return;
     renderRaf = window.requestAnimationFrame(() => {
       renderRaf = 0;
-      if (!destroyed) render();
+      if (destroyed || active.size > 0) return;
+      if (renderPending) render();
     });
   };
 
@@ -117,16 +223,6 @@ export function createDomSoftKeyboard(
   const keyAt = (row: number, col: number): SoftKeyDef | null => {
     const rows = layoutRows(layout);
     return rows[row]?.[col] ?? null;
-  };
-
-  const findCharButton = (value: string): HTMLElement | null => {
-    const target = value.toLowerCase();
-    const buttons = rowsEl.querySelectorAll<HTMLElement>("button.sk-key[data-sk-char]");
-    for (let i = 0; i < buttons.length; i++) {
-      const b = buttons[i]!;
-      if ((b.dataset.skChar ?? "").toLowerCase() === target) return b;
-    }
-    return null;
   };
 
   const runAction = (id: SoftKeyId) => {
@@ -184,14 +280,16 @@ export function createDomSoftKeyboard(
     }
   };
 
-  const pressKey = (key: SoftKeyDef) => {
+  /** Commit the key under the finger (touchend). */
+  const commitKey = (key: SoftKeyDef) => {
     if (key.kind === "spacer") {
       if (key.actionAlias) {
+        // Backspace already fired on press — don't double-delete on release.
+        if (key.actionAlias === "backspace") return;
         runAction(key.actionAlias);
         return;
       }
       if (key.alias) {
-        // Alias always inserts against live letters/shifted casing.
         const ch =
           layout === "shifted" ? key.alias.toUpperCase() : key.alias.toLowerCase();
         handlers.onInsert(ch);
@@ -204,74 +302,413 @@ export function createDomSoftKeyboard(
       afterChar();
       return;
     }
+    if (key.id === "backspace") return; // already handled on press
     runAction(key.id);
   };
 
-  const onPointerDown = (ev: PointerEvent, el: HTMLElement) => {
-    // Keep focus off native IME. Capture so highlight clears even if finger slides.
-    ev.preventDefault();
-    try {
-      el.setPointerCapture?.(ev.pointerId);
-    } catch {
-      /* ignore — some browsers throw if pointer already gone */
+  /** Spatial hit-test against cached key rects. Nearest-center fallback. */
+  const hitKeyEl = (x: number, y: number, softPad = 28): HTMLElement | null => {
+    if (!hitCache.length || performance.now() - hitCacheAt > 2000) {
+      rebuildHitCache();
     }
 
-    const row = Number(el.dataset.skRow);
-    const col = Number(el.dataset.skCol);
-    if (!Number.isFinite(row) || !Number.isFinite(col)) return;
-    const key = keyAt(row, col);
-    if (!key) return;
+    let inside: KeyHit | null = null;
+    let nearest: KeyHit | null = null;
+    let nearestDist = Infinity;
 
-    pressedEl = el;
+    for (let i = 0; i < hitCache.length; i++) {
+      const h = hitCache[i]!;
+      if (x >= h.left && x < h.right && y >= h.top && y < h.bottom) {
+        inside = h;
+        break;
+      }
+      const cx = (h.left + h.right) * 0.5;
+      const cy = (h.top + h.bottom) * 0.5;
+      const dx = x - cx;
+      const dy = y - cy;
+      const d = dx * dx + dy * dy;
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = h;
+      }
+    }
+
+    if (inside) return inside.el;
+
+    if (nearest && softPad > 0) {
+      if (
+        x >= nearest.left - softPad &&
+        x <= nearest.right + softPad &&
+        y >= nearest.top - softPad &&
+        y <= nearest.bottom + softPad
+      ) {
+        return nearest.el;
+      }
+    }
+    return null;
+  };
+
+  const clearVisual = (press: ActivePress) => {
+    press.el.classList.remove("sk-pressed");
+    if (press.el.classList.contains("sk-backspace")) setBackspaceIcon(press.el, false);
+    if (press.ghost) {
+      press.ghost.classList.remove("sk-pressed");
+      if (press.ghost.classList.contains("sk-backspace")) {
+        setBackspaceIcon(press.ghost, false);
+      }
+    }
+  };
+
+  const applyVisual = (el: HTMLElement, key: SoftKeyDef): HTMLElement | null => {
     el.classList.add("sk-pressed");
-
+    let ghost: HTMLElement | null = null;
     if (key.kind === "spacer" && key.alias) {
-      clearGhost();
-      ghostEl = findCharButton(key.alias);
-      ghostEl?.classList.add("sk-pressed");
+      ghost = findCharButton(key.alias);
+      ghost?.classList.add("sk-pressed");
     }
     if (key.kind === "spacer" && key.actionAlias) {
-      clearGhost();
-      ghostEl = rowsEl.querySelector<HTMLElement>(
-        `button.sk-${key.actionAlias === "backspace" ? "backspace" : key.actionAlias}`,
-      );
-      ghostEl?.classList.add("sk-pressed");
-      if (key.actionAlias === "backspace" && ghostEl) setBackspaceIcon(ghostEl, true);
+      ghost = findActionButton(key.actionAlias);
+      ghost?.classList.add("sk-pressed");
+      if (key.actionAlias === "backspace" && ghost) setBackspaceIcon(ghost, true);
     }
-
-    // Backspace fills while held — no resize, just outline → solid.
     if (key.kind === "action" && key.id === "backspace") {
       setBackspaceIcon(el, true);
     }
+    return ghost;
+  };
 
-    // Fire insert BEFORE any layout rebuild so fast taps never wait on DOM.
-    pressKey(key);
+  const armBackspaceRepeat = () => {
+    clearRepeat();
+    // Initial delete already fired by caller.
+    repeatTimer = window.setTimeout(() => {
+      repeatEvery = window.setInterval(() => handlers.onBackspace(), REPEAT_EVERY_MS);
+    }, REPEAT_DELAY_MS);
+  };
 
-    const isBackspace =
-      (key.kind === "action" && key.id === "backspace") ||
-      (key.kind === "spacer" && key.actionAlias === "backspace");
-    if (isBackspace) {
-      clearRepeat();
-      repeatTimer = window.setTimeout(() => {
-        repeatEvery = window.setInterval(() => handlers.onBackspace(), REPEAT_EVERY_MS);
-      }, REPEAT_DELAY_MS);
+  const resolveKey = (el: HTMLElement): SoftKeyDef | null => {
+    const row = Number(el.dataset.skRow);
+    const col = Number(el.dataset.skCol);
+    if (!Number.isFinite(row) || !Number.isFinite(col)) return null;
+    return keyAt(row, col);
+  };
+
+  /** True if another event stream already began a press at roughly this point. */
+  const recentlyBeganNear = (x: number, y: number): boolean => {
+    const dt = performance.now() - lastBeginAt;
+    // iOS pointer/touch twins can arrive 40–80ms apart on fast taps.
+    if (dt < 0 || dt > 90) return false;
+    const dx = x - lastBeginX;
+    const dy = y - lastBeginY;
+    return dx * dx + dy * dy < 36 * 36;
+  };
+
+  /** Start tracking a finger — highlight only (except backspace). */
+  const beginPress = (id: number, el: HTMLElement, x: number, y: number) => {
+    if (active.has(id)) return;
+    // Same physical tap arriving via a second event type (touch + pointer).
+    if (recentlyBeganNear(x, y)) return;
+    // Already tracking this tap under a different id — don't start a twin.
+    if (findActiveNear(x, y) !== null) return;
+
+    const key = resolveKey(el);
+    if (!key) return;
+
+    const ghost = applyVisual(el, key);
+    const backspace = isBackspaceKey(key);
+    active.set(id, {
+      el,
+      key,
+      ghost,
+      backspaceArmed: backspace,
+      cancelled: false,
+      lastGoodKey: key,
+      lastGoodEl: el,
+    });
+    lastBeginX = x;
+    lastBeginY = y;
+    lastBeginAt = performance.now();
+
+    if (backspace) {
+      handlers.onBackspace();
+      // Stamp as committed NOW — backspace fires on press, not release.
+      // Without this, touchend recovery thinks the tap was missed → double ⌫.
+      lastCommitKey = key;
+      lastCommitAt = performance.now();
+      lastCommitX = x;
+      lastCommitY = y;
+      if (active.size === 1) armBackspaceRepeat();
     }
   };
 
-  const onPointerEnd = (el: HTMLElement) => {
-    el.classList.remove("sk-pressed");
-    if (el.classList.contains("sk-backspace")) setBackspaceIcon(el, false);
-    if (pressedEl === el) pressedEl = null;
-    clearGhost();
-    clearRepeat();
+  /** Slide highlight to whatever key is under this finger now. */
+  const movePress = (
+    id: number,
+    x: number,
+    y: number,
+    opts?: { allowCancel?: boolean },
+  ) => {
+    const press = active.get(id);
+    if (!press) return;
+    const allowCancel = opts?.allowCancel !== false;
+
+    // During a slide, use a tighter pad so we don't sticky-hop too early.
+    const el = hitKeyEl(x, y, 10);
+    if (!el) {
+      if (!allowCancel) {
+        // touchend jitter — keep lastGood highlight/key for commit.
+        return;
+      }
+      // Finger slid off keyboard during move — clear highlight, don't commit.
+      clearVisual(press);
+      press.cancelled = true;
+      press.ghost = null;
+      press.backspaceArmed = false;
+      clearRepeat();
+      return;
+    }
+
+    if (el === press.el && !press.cancelled) return; // same key
+
+    const key = resolveKey(el);
+    if (!key) return;
+
+    clearVisual(press);
+    const ghost = applyVisual(el, key);
+    const wasBackspace = press.backspaceArmed;
+    const nowBackspace = isBackspaceKey(key);
+
+    press.el = el;
+    press.key = key;
+    press.ghost = ghost;
+    press.cancelled = false;
+    press.lastGoodKey = key;
+    press.lastGoodEl = el;
+
+    if (wasBackspace && !nowBackspace) {
+      clearRepeat();
+      press.backspaceArmed = false;
+    } else if (!wasBackspace && nowBackspace) {
+      // Slid onto backspace — fire once + arm repeat (Apple-ish).
+      handlers.onBackspace();
+      press.backspaceArmed = true;
+      lastCommitKey = key;
+      lastCommitAt = performance.now();
+      lastCommitX = x;
+      lastCommitY = y;
+      if (active.size === 1) armBackspaceRepeat();
+    }
   };
+
+  /** Same physical tap already committed nearby (pointer+touch double fire). */
+  const recentlyCommittedNear = (x: number, y: number, windowMs = 120): boolean => {
+    const dt = performance.now() - lastCommitAt;
+    if (dt < 0 || dt > windowMs) return false;
+    const dx = x - lastCommitX;
+    const dy = y - lastCommitY;
+    return dx * dx + dy * dy < 36 * 36;
+  };
+
+  const endPress = (id: number, commit: boolean, x?: number, y?: number) => {
+    const press = active.get(id);
+    if (!press) return;
+    active.delete(id);
+
+    clearVisual(press);
+
+    if (commit && !press.cancelled) {
+      const key = press.lastGoodKey ?? press.key;
+      const cx = x ?? lastBeginX;
+      const cy = y ?? lastBeginY;
+      // Position-based dedupe — NOT key identity. After ⇧, the same physical
+      // tap can resolve as C then c once shift unlatches; key-id dedupe fails.
+      if (!recentlyCommittedNear(cx, cy)) {
+        commitKey(key);
+        lastCommitKey = key;
+        lastCommitAt = performance.now();
+        lastCommitX = cx;
+        lastCommitY = cy;
+      }
+    }
+
+    if (active.size === 0) {
+      clearRepeat();
+      if (renderPending) scheduleRender();
+    } else {
+      let anyBs = false;
+      for (const p of active.values()) {
+        if (p.backspaceArmed) {
+          anyBs = true;
+          break;
+        }
+      }
+      if (!anyBs) clearRepeat();
+    }
+  };
+
+  /** Ghost click from previous touchend — same spot, shortly after. */
+  const isGhostFromPrevKey = (x: number, y: number): boolean => {
+    const dt = performance.now() - lastTouchEndAt;
+    if (dt < 0 || dt > 350) return false;
+    const dx = x - lastTouchEndX;
+    const dy = y - lastTouchEndY;
+    return dx * dx + dy * dy < 22 * 22;
+  };
+
+  /**
+   * Find an active press near (x,y) — used so pointerup can end a press that
+   * began as touchstart (different id spaces) and vice versa.
+   */
+  const findActiveNear = (x: number, y: number): number | null => {
+    let bestId: number | null = null;
+    let best = Infinity;
+    for (const [id, press] of active) {
+      const r = press.el.getBoundingClientRect();
+      const cx = (r.left + r.right) * 0.5;
+      const cy = (r.top + r.bottom) * 0.5;
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d < best) {
+        best = d;
+        bestId = id;
+      }
+    }
+    return best < 60 * 60 ? bestId : null;
+  };
+
+  const onTouchStart = (ev: TouchEvent) => {
+    // No preventDefault on touchstart — sequential tap reliability.
+    // touch-action:none on keys blocks scroll. Still PD on move.
+    if (!hitCache.length) rebuildHitCache();
+
+    for (let i = 0; i < ev.changedTouches.length; i++) {
+      const t = ev.changedTouches[i]!;
+      // Already handled by pointerdown for this physical tap.
+      if (recentlyBeganNear(t.clientX, t.clientY)) continue;
+      if (recentlyCommittedNear(t.clientX, t.clientY)) continue;
+      const el = hitKeyEl(t.clientX, t.clientY);
+      if (el) beginPress(t.identifier, el, t.clientX, t.clientY);
+    }
+  };
+
+  const onTouchMove = (ev: TouchEvent) => {
+    if (ev.cancelable) ev.preventDefault();
+    for (let i = 0; i < ev.changedTouches.length; i++) {
+      const t = ev.changedTouches[i]!;
+      const id = active.has(t.identifier)
+        ? t.identifier
+        : findActiveNear(t.clientX, t.clientY);
+      if (id !== null) movePress(id, t.clientX, t.clientY);
+    }
+  };
+
+  const onTouchEnd = (ev: TouchEvent) => {
+    // No preventDefault — sequential tap reliability.
+    for (let i = 0; i < ev.changedTouches.length; i++) {
+      const t = ev.changedTouches[i]!;
+      lastTouchEndX = t.clientX;
+      lastTouchEndY = t.clientY;
+      lastTouchEndAt = performance.now();
+
+      const id: number | null = active.has(t.identifier)
+        ? t.identifier
+        : findActiveNear(t.clientX, t.clientY);
+
+      if (id === null) {
+        // Recovery ONLY if nothing already committed this physical tap.
+        // Dual pointer+touch was producing Cc / double-⌫ via this path.
+        if (recentlyCommittedNear(t.clientX, t.clientY)) continue;
+        if (recentlyBeganNear(t.clientX, t.clientY)) continue;
+        const el = hitKeyEl(t.clientX, t.clientY);
+        if (el) {
+          beginPress(t.identifier, el, t.clientX, t.clientY);
+          endPress(t.identifier, true, t.clientX, t.clientY);
+        }
+        continue;
+      }
+      movePress(id, t.clientX, t.clientY, { allowCancel: false });
+      endPress(id, true, t.clientX, t.clientY);
+    }
+  };
+
+  const onPointerDown = (ev: PointerEvent) => {
+    // Accept all pointerTypes; beginPress / recentlyBeganNear dedupe vs touch.
+    if (isGhostFromPrevKey(ev.clientX, ev.clientY) && active.size === 0) {
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
+    if (recentlyCommittedNear(ev.clientX, ev.clientY)) {
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
+    if (!hitCache.length) rebuildHitCache();
+    const el = hitKeyEl(ev.clientX, ev.clientY);
+    if (el) beginPress(ev.pointerId, el, ev.clientX, ev.clientY);
+  };
+
+  const onPointerMove = (ev: PointerEvent) => {
+    const id = active.has(ev.pointerId)
+      ? ev.pointerId
+      : findActiveNear(ev.clientX, ev.clientY);
+    if (id === null) return;
+    if (ev.cancelable) ev.preventDefault();
+    movePress(id, ev.clientX, ev.clientY);
+  };
+
+  const onPointerEnd = (ev: PointerEvent) => {
+    const id = active.has(ev.pointerId)
+      ? ev.pointerId
+      : findActiveNear(ev.clientX, ev.clientY);
+    if (id === null) return;
+    movePress(id, ev.clientX, ev.clientY, { allowCancel: false });
+    endPress(id, true, ev.clientX, ev.clientY);
+  };
+
+  /**
+   * Last-resort: iOS sometimes delivers only a click for a sequential tap
+   * when touchstart was dropped.
+   */
+  const onClick = (ev: MouseEvent) => {
+    if (isGhostFromPrevKey(ev.clientX, ev.clientY)) {
+      ev.preventDefault();
+      return;
+    }
+    if (findActiveNear(ev.clientX, ev.clientY) !== null) return;
+    if (recentlyBeganNear(ev.clientX, ev.clientY)) return;
+    if (recentlyCommittedNear(ev.clientX, ev.clientY, 200)) {
+      ev.preventDefault();
+      return;
+    }
+
+    if (!hitCache.length) rebuildHitCache();
+    const el = hitKeyEl(ev.clientX, ev.clientY);
+    if (!el) return;
+    const id = nextSyntheticId--;
+    beginPress(id, el, ev.clientX, ev.clientY);
+    endPress(id, true, ev.clientX, ev.clientY);
+    ev.preventDefault();
+  };
+
+  const touchOpts: AddEventListenerOptions = { passive: false, capture: true };
+  root.addEventListener("touchstart", onTouchStart, touchOpts);
+  root.addEventListener("touchmove", onTouchMove, touchOpts);
+  root.addEventListener("touchend", onTouchEnd, touchOpts);
+  root.addEventListener("touchcancel", onTouchEnd, touchOpts);
+  root.addEventListener("pointerdown", onPointerDown, { capture: true });
+  root.addEventListener("pointermove", onPointerMove, { capture: true });
+  root.addEventListener("pointerup", onPointerEnd, { capture: true });
+  root.addEventListener("pointercancel", onPointerEnd, { capture: true });
+  root.addEventListener("click", onClick, { capture: true });
+
+  const onViewport = () => scheduleHitCache();
+  window.addEventListener("resize", onViewport);
+  window.addEventListener("orientationchange", onViewport);
+  window.visualViewport?.addEventListener("resize", onViewport);
+  window.visualViewport?.addEventListener("scroll", onViewport);
 
   const labelHtml = (key: SoftKeyDef): string => {
     if (key.kind === "spacer") return "";
     if (key.kind === "action") {
       switch (key.id) {
         case "shift":
-          // Idle outline · one-shot filled · caps = broken ⇪ filled.
           if (shiftLatched) return CAPS_FILL;
           if (layout === "shifted") return SHIFT_FILL;
           return SHIFT_OUTLINE;
@@ -288,24 +725,14 @@ export function createDomSoftKeyboard(
     return escapeHtml(key.label);
   };
 
-  const setBackspaceIcon = (el: HTMLElement, filled: boolean) => {
-    const label = el.querySelector(".sk-label");
-    if (label) label.innerHTML = filled ? BACKSPACE_FILL : BACKSPACE_OUTLINE;
-  };
-
-  const bindPress = (el: HTMLElement) => {
-    el.addEventListener("pointerdown", (e) => onPointerDown(e, el));
-    el.addEventListener("pointerup", () => onPointerEnd(el));
-    el.addEventListener("pointercancel", () => onPointerEnd(el));
-    el.addEventListener("lostpointercapture", () => onPointerEnd(el));
-  };
-
   const render = () => {
+    if (active.size > 0) {
+      renderPending = true;
+      return;
+    }
+    renderPending = false;
     clearRepeat();
-    clearGhost();
-    pressedEl = null;
     const rows = layoutRows(layout);
-    // Rebuild rows with DocumentFragment — no framework diffing.
     const frag = document.createDocumentFragment();
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r]!;
@@ -328,7 +755,6 @@ export function createDomSoftKeyboard(
               "aria-label",
               key.alias ?? key.actionAlias ?? "spacer",
             );
-            bindPress(btn);
             rowEl.appendChild(btn);
           } else {
             const sp = document.createElement("div");
@@ -367,14 +793,13 @@ export function createDomSoftKeyboard(
         label.className = "sk-label";
         label.innerHTML = labelHtml(key);
         btn.appendChild(label);
-
-        bindPress(btn);
         rowEl.appendChild(btn);
       }
       frag.appendChild(rowEl);
     }
     rowsEl.replaceChildren(frag);
     root.classList.toggle("mic-on", micActive);
+    scheduleHitCache();
   };
 
   render();
@@ -386,32 +811,42 @@ export function createDomSoftKeyboard(
       root.hidden = !open;
       root.setAttribute("aria-hidden", open ? "false" : "true");
       if (!open) {
+        for (const id of [...active.keys()]) endPress(id, false);
         clearRepeat();
-        clearGhost();
+        hitCache = [];
+      } else {
+        scheduleHitCache();
       }
     },
-    setMicActive(active) {
-      if (micActive === active) return;
-      micActive = active;
+    setMicActive(activeMic) {
+      if (micActive === activeMic) return;
+      micActive = activeMic;
       root.classList.toggle("mic-on", micActive);
       const micBtn = rowsEl.querySelector<HTMLElement>("button.sk-mic");
-      if (micBtn) {
-        micBtn.classList.toggle("sk-active", micActive);
-        const icon = micBtn.querySelector(".sk-mic-icon");
-        icon?.classList.toggle("active", micActive);
-      }
+      if (micBtn) micBtn.classList.toggle("sk-active", micActive);
     },
     setHandlers(next) {
       handlers = { ...handlers, ...next };
     },
     destroy() {
       destroyed = true;
-      if (renderRaf) {
-        cancelAnimationFrame(renderRaf);
-        renderRaf = 0;
-      }
+      if (renderRaf) cancelAnimationFrame(renderRaf);
+      if (hitCacheRaf) cancelAnimationFrame(hitCacheRaf);
+      for (const id of [...active.keys()]) endPress(id, false);
       clearRepeat();
-      clearGhost();
+      root.removeEventListener("touchstart", onTouchStart, true);
+      root.removeEventListener("touchmove", onTouchMove, true);
+      root.removeEventListener("touchend", onTouchEnd, true);
+      root.removeEventListener("touchcancel", onTouchEnd, true);
+      root.removeEventListener("pointerdown", onPointerDown, true);
+      root.removeEventListener("pointermove", onPointerMove, true);
+      root.removeEventListener("pointerup", onPointerEnd, true);
+      root.removeEventListener("pointercancel", onPointerEnd, true);
+      root.removeEventListener("click", onClick, true);
+      window.removeEventListener("resize", onViewport);
+      window.removeEventListener("orientationchange", onViewport);
+      window.visualViewport?.removeEventListener("resize", onViewport);
+      window.visualViewport?.removeEventListener("scroll", onViewport);
       root.remove();
     },
   };

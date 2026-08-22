@@ -77,6 +77,10 @@
   width: 100%;
   max-width: 430px;
   margin: 0 auto;
+  /* Critical for multi-touch reliability on iOS Safari. */
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .sk-row {
@@ -137,7 +141,8 @@
   box-shadow: none;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
+  /* none > manipulation: iOS won't try to claim double-tap / pan on keys */
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   appearance: none;
@@ -249,8 +254,9 @@
   height: 29px;
 }
 
-.sk-key.sk-pressed::before,
-.sk-key:active::before {
+/* Highlight is JS-only (.sk-pressed). :active sticks to the first key for
+   the whole smear gesture on iOS — don't use it. */
+.sk-key.sk-pressed::before {
   background: var(--sk-key-pressed);
 }
 
@@ -258,8 +264,7 @@
   background: var(--sk-mod);
 }
 
-.sk-key.sk-mod.sk-pressed::before,
-.sk-key.sk-mod:active::before {
+.sk-key.sk-mod.sk-pressed::before {
   background: var(--sk-mod-pressed);
 }
 
@@ -274,8 +279,7 @@
   background: var(--sk-key);
 }
 
-.sk-key.sk-space.sk-pressed::before,
-.sk-key.sk-space:active::before {
+.sk-key.sk-space.sk-pressed::before {
   background: var(--sk-key-pressed);
 }
 
@@ -300,8 +304,7 @@
   color: #fff;
 }
 
-.sk-key.sk-return.sk-pressed::before,
-.sk-key.sk-return:active::before {
+.sk-key.sk-return.sk-pressed::before {
   background: var(--sk-return-pressed);
 }
 

@@ -68,25 +68,69 @@ function wsURL(termID: string, cols: number, rows: number): string {
   return `${proto}//${location.host}/ws/term?${q}`;
 }
 
-/** Module-scoped so Solid re-renders don't wipe a pending fast-tap batch. */
-let softInsertBuf = "";
-let softInsertScheduled = false;
-let softInsertSend: ((t: string) => void) | null = null;
+/**
+ * Durable terminal input queue (module-scoped).
+ * Soft-keyboard taps must NEVER silently vanish across WS reconnect gaps —
+ * old sendRaw() returned early when readyState !== OPEN.
+ */
+let liveSocket: WebSocket | undefined;
+let outboundBuf = "";
+let outboundFlushScheduled = false;
+let outboundRetryTimer: number | undefined;
 
-function flushSoftInsert() {
-  softInsertScheduled = false;
-  const t = softInsertBuf;
-  softInsertBuf = "";
-  if (t) softInsertSend?.(t);
+function setLiveSocket(ws: WebSocket | undefined) {
+  liveSocket = ws;
+  if (ws && ws.readyState === WebSocket.OPEN) flushOutbound(true);
 }
 
-function queueSoftInsert(text: string) {
+function scheduleOutboundRetry() {
+  if (outboundRetryTimer !== undefined) return;
+  outboundRetryTimer = window.setTimeout(() => {
+    outboundRetryTimer = undefined;
+    flushOutbound(true);
+  }, 50);
+}
+
+function flushOutbound(fromRetry = false) {
+  outboundFlushScheduled = false;
+  if (!outboundBuf) return;
+  const ws = liveSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    // Keep buffer; retry until socket is live again.
+    scheduleOutboundRetry();
+    return;
+  }
+  const t = outboundBuf;
+  outboundBuf = "";
+  try {
+    ws.send(JSON.stringify({ type: "terminal.input", text: t }));
+  } catch {
+    // Put bytes back and retry — never drop soft-kb / typed input.
+    outboundBuf = t + outboundBuf;
+    scheduleOutboundRetry();
+    return;
+  }
+  if (outboundBuf) {
+    if (fromRetry) scheduleOutboundRetry();
+    else {
+      outboundFlushScheduled = true;
+      queueMicrotask(() => flushOutbound());
+    }
+  }
+}
+
+/** Enqueue text for the live terminal; coalesces + survives reconnects. */
+function enqueueTerminalInput(text: string) {
   if (!text) return;
-  softInsertBuf += text;
-  if (softInsertScheduled) return;
-  softInsertScheduled = true;
-  queueMicrotask(flushSoftInsert);
+  outboundBuf += text;
+  if (outboundFlushScheduled) return;
+  outboundFlushScheduled = true;
+  queueMicrotask(() => flushOutbound());
 }
+
+/** Soft-kb path — same durable queue. */
+const queueSoftInsert = enqueueTerminalInput;
+const flushSoftInsert = () => flushOutbound(true);
 
 function mouseTrackingOn(term: Terminal | undefined): boolean {
   if (!term) return false;
@@ -190,23 +234,31 @@ export default function App() {
   let listenTarget: HTMLInputElement | undefined;
 
   const sendRaw = (data: string) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(
-      JSON.stringify({
-        type: "terminal.input",
-        text: data,
-      }),
-    );
+    // Always enqueue — never silently drop when WS is reconnecting.
+    enqueueTerminalInput(data);
   };
 
   const sendBytes = (data: string) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(
-      JSON.stringify({
-        type: "terminal.input",
-        bytes: btoa(data),
-      }),
-    );
+    // Binary-ish control sequences: still text-safe via base64, but also
+    // go through the durable path once OPEN; if offline, convert to text
+    // enqueue is wrong for raw bytes — keep immediate send + short retry.
+    const payload = JSON.stringify({
+      type: "terminal.input",
+      bytes: btoa(data),
+    });
+    const trySend = () => {
+      const ws = liveSocket ?? socket;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        window.setTimeout(trySend, 50);
+        return;
+      }
+      try {
+        ws.send(payload);
+      } catch {
+        window.setTimeout(trySend, 50);
+      }
+    };
+    trySend();
   };
 
   const sendResize = (cols: number, rows: number) => {
@@ -295,6 +347,7 @@ export default function App() {
       }
       socket = undefined;
     }
+    setLiveSocket(undefined);
     setConn("idle");
   };
 
@@ -328,8 +381,11 @@ export default function App() {
     ws.onopen = () => {
       reconnectAttempt = 0;
       takeoverStolenCount = 0;
+      setLiveSocket(ws);
       setConn("live");
       setError("");
+      // Flush any soft-kb / typed input that landed during reconnect.
+      flushOutbound(true);
       // Size already goes out via the WS URL / takeover args. An immediate
       // terminal.resize forces a full TUI redraw on every agent switch.
     };
@@ -352,6 +408,7 @@ export default function App() {
     };
 
     ws.onclose = (ev) => {
+      if (liveSocket === ws) setLiveSocket(undefined);
       socket = undefined;
       if (selected() !== termID || activeTermID !== termID) {
         setConn("dead");
@@ -825,18 +882,16 @@ export default function App() {
     sendRaw(bytes);
   };
 
-  // Coalesce rapid soft-keyboard taps into one WS frame (drops were from
-  // per-key JSON + layout rebuild races under fast multi-tap).
-  softInsertSend = sendRaw;
+  // Soft-kb → durable outbound queue (survives WS reconnect gaps).
   const softInsert = (text: string) => queueSoftInsert(text);
 
   const softBackspace = () => {
-    if (softInsertBuf) flushSoftInsert();
-    sendRaw("\x7f");
+    if (outboundBuf) flushSoftInsert();
+    enqueueTerminalInput("\x7f");
   };
   const softReturn = () => {
-    if (softInsertBuf) flushSoftInsert();
-    sendRaw("\r");
+    if (outboundBuf) flushSoftInsert();
+    enqueueTerminalInput("\r");
   };
 
   const softPaste = async () => {
