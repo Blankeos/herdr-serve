@@ -986,20 +986,12 @@ export default function App() {
     if (match) selectShell(match);
   };
 
+  // '+' always creates a fresh shell tab. Opening Terminals still reuses
+  // lastShellId via focusRememberedShell — that path is separate.
   const createOrFocusShell = async () => {
     const wsId = focusedWorkspaceId();
     if (!wsId) {
       setError("No workspace focused");
-      return;
-    }
-    const shells = shellsInWorkspace(wsId);
-    if (shells.length) {
-      const remembered = lastShellId();
-      const focused =
-        (remembered && shells.find((p) => agentId(p) === remembered)) ||
-        shells.find((p) => p.focused) ||
-        shells[0];
-      if (focused) selectShell(focused);
       return;
     }
     setError("");
@@ -1012,8 +1004,10 @@ export default function App() {
       }
       scheduleStatusRefresh(200);
       await refreshPanes(true);
-      if (id) selectAgent(id);
-      else if (res.pane_id) {
+      if (id) {
+        setLastShellId(id);
+        selectAgent(id);
+      } else if (res.pane_id) {
         const match = panes().find((p) => p.pane_id === res.pane_id);
         if (match) selectShell(match);
       }
@@ -1560,7 +1554,9 @@ export default function App() {
         startFling(vel, flingX0, flingY0);
         return;
       }
-      if (drawerOpen() || rightOpen() || swipeLock) return;
+      // Block only while scrubbing / left drawer covers the term.
+      // Terminals page keeps the term interactive (chips are above it).
+      if (drawerOpen() || swipeLock || rightDragging()) return;
       if (sendMouseClick(x, y)) {
         ev.preventDefault();
       } else if (!isMobile()) {
@@ -1575,12 +1571,12 @@ export default function App() {
       if (swipeLock || rightDragging() || drawerDragging()) return;
       if (isMobile()) {
         if (performance.now() < ignoreMouseUntil) return;
-        if (!drawerOpen() && !rightOpen() && !suppressClickFocus) {
+        if (!drawerOpen() && !suppressClickFocus) {
           sendMouseClick(ev.clientX, ev.clientY);
         }
         return;
       }
-      if (!suppressClickFocus && !drawerOpen() && !rightOpen()) {
+      if (!suppressClickFocus && !drawerOpen()) {
         sendMouseClick(ev.clientX, ev.clientY);
       }
       term?.focus();
@@ -1848,6 +1844,13 @@ export default function App() {
   // (Only desktop resize / explicit dismiss closes it.)
 
   createEffect(() => {
+    // Terminals chrome reserves top padding — refit so TUIs see the new rows.
+    rightOpen();
+    rightDragging();
+    queueMicrotask(() => refit());
+  });
+
+  createEffect(() => {
     // Desktop resize → soft kb off.
     if (!isMobile()) closeSoftKeyboard();
   });
@@ -1950,6 +1953,7 @@ export default function App() {
         classList={{
           "drawer-open": drawerOpen(),
           "right-open": rightOpen(),
+          "right-dragging": rightDragging(),
           dragging: drawerDragging() || rightDragging(),
         }}
         style={shellStyle() as Record<string, string> | undefined}
@@ -2173,9 +2177,12 @@ export default function App() {
               <button
                 type="button"
                 class="term-chip term-chip-add"
-                title="New or focus shell"
-                aria-label="New or focus shell"
-                onClick={() => void createOrFocusShell()}
+                title="New shell"
+                aria-label="New shell"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void createOrFocusShell();
+                }}
               >
                 +
               </button>

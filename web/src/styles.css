@@ -1623,6 +1623,13 @@ textarea {
     --right-x: 100vw;
   }
 
+  /* Only clear the chips row — Agents topbar still occupies flex space above
+     term-wrap, so we must not also subtract topbar/safe-top here. */
+  .shell.right-open .term,
+  .shell.right-dragging .term {
+    top: 2.3rem;
+  }
+
   .sidebar {
     position: fixed;
     left: 0;
