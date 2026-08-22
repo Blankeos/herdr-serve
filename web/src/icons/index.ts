@@ -1,2 +1,8 @@
 export { default as IconSettings } from './Settings';
 export { default as IconCaretDown } from './CaretDown';
+export { default as IconShift } from './f7_shift';
+export { default as IconShiftFill } from './f7_shift-fill';
+export { default as IconBackspace } from './f7_delete-left';
+export { default as IconBackspaceFill } from './f7_delete-left-fill';
+export { default as IconEmoji } from './f7_smiley';
+export { default as IconMic } from './f7_mic';

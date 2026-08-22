@@ -38,6 +38,11 @@ import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from 
 import { encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { IconSettings, IconCaretDown } from "./icons";
+import {
+  SoftKeyboard,
+  createDictation,
+  speechSupported,
+} from "./lib/soft-keyboard";
 
 const SIDEBAR_W = 272;
 const UNGROUPED = "ungrouped";
@@ -61,6 +66,26 @@ function wsURL(termID: string, cols: number, rows: number): string {
     rows: String(rows),
   });
   return `${proto}//${location.host}/ws/term?${q}`;
+}
+
+/** Module-scoped so Solid re-renders don't wipe a pending fast-tap batch. */
+let softInsertBuf = "";
+let softInsertScheduled = false;
+let softInsertSend: ((t: string) => void) | null = null;
+
+function flushSoftInsert() {
+  softInsertScheduled = false;
+  const t = softInsertBuf;
+  softInsertBuf = "";
+  if (t) softInsertSend?.(t);
+}
+
+function queueSoftInsert(text: string) {
+  if (!text) return;
+  softInsertBuf += text;
+  if (softInsertScheduled) return;
+  softInsertScheduled = true;
+  queueMicrotask(flushSoftInsert);
 }
 
 function mouseTrackingOn(term: Terminal | undefined): boolean {
@@ -90,16 +115,18 @@ function prepareMobileInput(term: Terminal) {
   ta.setAttribute("autocorrect", "off");
   ta.setAttribute("autocapitalize", "none");
   ta.setAttribute("spellcheck", "false");
-  ta.setAttribute("enterkeyhint", "send");
-  ta.setAttribute("inputmode", "text");
+  ta.setAttribute("enterkeyhint", "enter");
+  ta.setAttribute("inputmode", "none");
+  ta.setAttribute("readonly", "true");
+  // Soft keyboard owns mobile input — never open the native IME.
   // Keep the helper textarea out of the mouse hit path so wheel /
-  // scrollbar / TUI mouse clicks reach the canvas. Focus is still
-  // granted via term.focus() on intentional taps.
+  // scrollbar / TUI mouse clicks reach the canvas.
   ta.style.left = "-9999px";
   ta.style.top = "0";
   ta.style.width = "0";
   ta.style.height = "0";
   ta.style.opacity = "0";
+  ta.style.caretColor = "transparent";
   ta.style.pointerEvents = "none";
 }
 
@@ -146,8 +173,11 @@ export default function App() {
   const [importText, setImportText] = createSignal("");
   const [settingsMsg, setSettingsMsg] = createSignal("");
   const [exportText, setExportText] = createSignal("");
+  const [softKbOpen, setSoftKbOpen] = createSignal(false);
+  const [micActive, setMicActive] = createSignal(false);
 
   let termHost: HTMLDivElement | undefined;
+  let dictation: ReturnType<typeof createDictation> | undefined;
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
   let socket: WebSocket | undefined;
@@ -795,6 +825,95 @@ export default function App() {
     sendRaw(bytes);
   };
 
+  // Coalesce rapid soft-keyboard taps into one WS frame (drops were from
+  // per-key JSON + layout rebuild races under fast multi-tap).
+  softInsertSend = sendRaw;
+  const softInsert = (text: string) => queueSoftInsert(text);
+
+  const softBackspace = () => {
+    if (softInsertBuf) flushSoftInsert();
+    sendRaw("\x7f");
+  };
+  const softReturn = () => {
+    if (softInsertBuf) flushSoftInsert();
+    sendRaw("\r");
+  };
+
+  const softPaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) softInsert(text);
+    } catch {
+      setError("Clipboard paste blocked — allow paste permission");
+      window.setTimeout(() => setError(""), 2500);
+    }
+  };
+
+  const softMicToggle = () => {
+    if (!dictation) {
+      if (!speechSupported()) {
+        setError("Voice typing unavailable in this browser");
+        window.setTimeout(() => setError(""), 2500);
+        return;
+      }
+      dictation = createDictation({
+        onInsert: (t) => softInsert(t.endsWith(" ") ? t : `${t} `),
+        onActiveChange: setMicActive,
+        onError: (msg) => {
+          setError(`Mic: ${msg}`);
+          window.setTimeout(() => setError(""), 2500);
+        },
+      });
+    }
+    dictation.toggle();
+  };
+
+  const jumpScroll = (edge: "top" | "bottom") => {
+    if (!term) return;
+    const dir = edge === "bottom" ? "down" : "up";
+    // 1) Local xterm viewport (normal buffer / local scrollback).
+    try {
+      if (edge === "bottom") term.scrollToBottom();
+      else {
+        term.scrollToLine(0);
+        // Fallback: scroll by full buffer height upward.
+        const y = term.buffer.active.viewportY;
+        if (y > 0) term.scrollLines(-y);
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    // 2) TUI alt-screen: flood SGR wheel (most agents honor mouse scroll).
+    const col = Math.max(1, Math.floor(term.cols / 2));
+    const row = Math.max(1, Math.floor(term.rows / 2));
+    sendBytes(encodeSgrWheelLines(dir, col, row, 8).repeat(40));
+    // 3) Ctrl+Home / Ctrl+End — jump extremes in many TUIs.
+    sendRaw(edge === "bottom" ? "\x1b[1;5F" : "\x1b[1;5H");
+    // 4) PageUp / PageDown burst.
+    sendRaw((edge === "bottom" ? "\x1b[6~" : "\x1b[5~").repeat(16));
+    // 5) Host scrollback + configured scroll mode.
+    sendHostScroll(dir, 2000, "page_key");
+    for (let i = 0; i < 16; i++) sendScroll(dir, 8);
+  };
+
+  const openSoftKeyboard = () => {
+    if (!isMobile()) return;
+    setSoftKbOpen(true);
+    // Never focus xterm textarea — that opens native IME.
+    try {
+      term?.blur();
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const closeSoftKeyboard = () => {
+    setSoftKbOpen(false);
+    dictation?.stop();
+  };
+
   let lastSentCols = 0;
   let lastSentRows = 0;
   let lastHostW = 0;
@@ -896,21 +1015,35 @@ export default function App() {
         ev.preventDefault();
       }
     };
+    // iOS synthesizes mouseup after touchend — ignore it briefly so drawer
+    // swipes / scrolls don't re-open the soft keyboard.
+    let ignoreMouseUntil = 0;
+
     const onTouchEnd = () => {
       (termHost as HTMLDivElement & { _ty?: number })._ty = undefined;
       touchScrollAcc = 0;
+      ignoreMouseUntil = performance.now() + 450;
       if (!suppressClickFocus) {
-        // Summon native keyboard on tap
-        term?.focus();
+        // Mobile: open in-app soft keyboard instead of native IME.
+        // Skip if drawer is open / opening — swipe-to-open used to also
+        // summon the keyboard via this same touchend.
+        if (isMobile()) {
+          if (!drawerOpen()) openSoftKeyboard();
+        } else {
+          term?.focus();
+        }
       }
       suppressClickFocus = false;
     };
 
-    // Mouse click into empty area / after gesture: focus for typing
+    // Desktop: focus for hardware typing. Mobile taps go through touchend.
     const onMouseUp = (ev: MouseEvent) => {
       if (ev.button !== 0) return;
-      // Don't steal focus if user interacted with scrollbar-ish right edge
-      // (xterm scrollbar is ~10px). Still focus on normal clicks.
+      if (isMobile()) {
+        if (performance.now() < ignoreMouseUntil) return;
+        if (!drawerOpen() && !suppressClickFocus) openSoftKeyboard();
+        return;
+      }
       term?.focus();
     };
 
@@ -957,7 +1090,7 @@ export default function App() {
         const target = event?.target as Element | null;
         if (
           target?.closest(
-            ".sidebar, .sheet, .sheet-backdrop, .inline-create, input, textarea, select",
+            ".sidebar, .sheet, .sheet-backdrop, .inline-create, .soft-keyboard, .dock, input, textarea, select",
           )
         ) {
           cancel();
@@ -976,6 +1109,8 @@ export default function App() {
         const next = Math.max(0, Math.min(SIDEBAR_W, start + mx));
 
         if (active) {
+          // Don't open soft kb from the same gesture that dragged the drawer.
+          suppressClickFocus = true;
           setDrawerDragging(true);
           setDrawerX(next);
           return;
@@ -1002,10 +1137,22 @@ export default function App() {
       },
     );
 
+    // Extra iOS guard: pinch / gesture zoom on chrome UI.
+    const blockGesture = (e: Event) => e.preventDefault();
+    document.addEventListener("gesturestart", blockGesture, {
+      passive: false,
+    } as AddEventListenerOptions);
+    document.addEventListener("gesturechange", blockGesture, {
+      passive: false,
+    } as AddEventListenerOptions);
+
     onCleanup(() => {
       if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer);
       mq.removeEventListener("change", onMq);
       gesture.destroy();
+      dictation?.stop();
+      document.removeEventListener("gesturestart", blockGesture);
+      document.removeEventListener("gesturechange", blockGesture);
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onResize);
@@ -1015,6 +1162,26 @@ export default function App() {
       termHost?.removeEventListener("mouseup", onMouseUp);
       disconnect();
       term?.dispose();
+    });
+  });
+
+  createEffect(() => {
+    // Drawer open → dismiss soft kb so it doesn't fight the sidebar.
+    if (drawerOpen()) closeSoftKeyboard();
+  });
+
+  createEffect(() => {
+    // Desktop resize → soft kb off.
+    if (!isMobile()) closeSoftKeyboard();
+  });
+
+  createEffect(() => {
+    // Soft keyboard is in-flow — reflow xterm when it opens/closes.
+    softKbOpen();
+    queueMicrotask(() => {
+      lastHostW = 0;
+      lastHostH = 0;
+      refit();
     });
   });
 
@@ -1249,6 +1416,46 @@ export default function App() {
 
           <nav class="dock" aria-label="Shortcut keys">
             <div class="keybar-scroll">
+              <Show when={isMobile()}>
+                <button
+                  type="button"
+                  class="keychip"
+                  classList={{ active: softKbOpen() }}
+                  title="Toggle on-screen keyboard"
+                  onClick={() =>
+                    softKbOpen() ? closeSoftKeyboard() : openSoftKeyboard()
+                  }
+                >
+                  Keyboard
+                </button>
+                <button
+                  type="button"
+                  class="keychip"
+                  title="Paste from clipboard"
+                  disabled={!selected() || conn() !== "live"}
+                  onClick={() => void softPaste()}
+                >
+                  Paste
+                </button>
+                <button
+                  type="button"
+                  class="keychip jump"
+                  title="Scroll to top"
+                  disabled={!selected()}
+                  onClick={() => jumpScroll("top")}
+                >
+                  ↑ Top
+                </button>
+                <button
+                  type="button"
+                  class="keychip jump"
+                  title="Scroll to bottom"
+                  disabled={!selected()}
+                  onClick={() => jumpScroll("bottom")}
+                >
+                  ↓ Bottom
+                </button>
+              </Show>
               <For each={shortcutConfig().shortcuts}>
                 {(s) => (
                   <button
@@ -1269,6 +1476,17 @@ export default function App() {
               </Show>
             </div>
           </nav>
+
+          <SoftKeyboard
+            open={softKbOpen()}
+            micActive={micActive()}
+            onInsert={softInsert}
+            onBackspace={softBackspace}
+            onReturn={softReturn}
+            onMicToggle={softMicToggle}
+            onPaste={() => void softPaste()}
+            onEmoji={() => softInsert("🙂")}
+          />
         </div>
       </div>
 

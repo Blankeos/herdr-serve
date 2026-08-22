@@ -1,0 +1,370 @@
+/* Reusable iOS-style soft keyboard — brick keys, A-row inset.
+   Follows system light/dark via prefers-color-scheme.
+   Hitboxes fill chrome; visual faces stay inset. */
+
+.soft-keyboard {
+  /* Geometry */
+  --sk-face-y: 5.5px;
+  --sk-face-x: 3px;
+  --sk-pad-top: 8px;
+  --sk-pad-bottom: 10px;
+  --sk-row-face: 42px;
+  --sk-row: calc(var(--sk-row-face) + var(--sk-face-y) * 2);
+  --sk-accessory-face: 28px;
+  --sk-accessory-row: calc(var(--sk-accessory-face) + var(--sk-face-y) * 2);
+  --sk-icon: 22px;
+  --sk-icon-shift-active: 24px;
+
+  /* Dark defaults (matches current app + iOS dark keyboard) */
+  --sk-bg: #0b0b0d;
+  --sk-key: #2a2a2e;
+  --sk-key-pressed: #6c6c70;
+  --sk-mod: #17171a;
+  --sk-mod-pressed: #3a3a3c;
+  --sk-text: #ffffff;
+  --sk-shadow: #000000aa;
+  --sk-return: #0a84ff;
+  --sk-return-pressed: #409cff;
+  --sk-active-bg: #f2f2f7;
+  --sk-active-text: #1c1c1e;
+  --sk-mic-active: #ff453a;
+  --sk-home-bar: #ffffff;
+  --sk-home-bar-opacity: 0.28;
+
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--sk-bg);
+  color: var(--sk-text);
+  color-scheme: dark light;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+}
+
+/* System light keyboard — Apple-like light chrome */
+@media (prefers-color-scheme: light) {
+  .soft-keyboard {
+    --sk-bg: #d1d3d9;
+    --sk-key: #ffffff;
+    --sk-key-pressed: #ebedf0;
+    --sk-mod: #acb0bb;
+    --sk-mod-pressed: #9a9ea8;
+    --sk-text: #000000;
+    --sk-shadow: #00000022;
+    --sk-return: #0a84ff;
+    --sk-return-pressed: #0071e3;
+    --sk-active-bg: #ffffff;
+    --sk-active-text: #000000;
+    --sk-mic-active: #ff3b30;
+    --sk-home-bar: #000000;
+    --sk-home-bar-opacity: 0.22;
+  }
+}
+
+.soft-keyboard.mic-on {
+  box-shadow: inset 0 1px 0 var(--sk-mic-active);
+}
+
+.sk-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  max-width: 430px;
+  margin: 0 auto;
+}
+
+.sk-row {
+  display: flex;
+  gap: 0;
+  justify-content: stretch;
+  align-items: stretch;
+  padding: 0;
+  height: var(--sk-row);
+}
+
+.sk-row:first-child {
+  height: calc(var(--sk-row) + var(--sk-pad-top));
+}
+
+.sk-row.sk-row-accessory {
+  height: calc(var(--sk-accessory-row) + var(--sk-pad-bottom));
+  align-items: center;
+}
+
+.sk-spacer {
+  flex: 0.5 0.5 0;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  pointer-events: none;
+}
+
+.sk-spacer.sk-spacer-hit {
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.sk-key {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  justify-content: stretch;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: var(--sk-face-y) var(--sk-face-x);
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--sk-text);
+  font: 400 22px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    sans-serif;
+  letter-spacing: 0;
+  box-shadow: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.sk-key::before {
+  content: "";
+  position: absolute;
+  inset: var(--sk-face-y) var(--sk-face-x);
+  border-radius: 5px;
+  background: var(--sk-key);
+  box-shadow: 0 1px 0 var(--sk-shadow);
+  z-index: 0;
+  pointer-events: none;
+  transition: background 40ms linear;
+}
+
+.sk-row:first-child .sk-key {
+  padding-top: calc(var(--sk-face-y) + var(--sk-pad-top));
+}
+.sk-row:first-child .sk-key::before {
+  top: calc(var(--sk-face-y) + var(--sk-pad-top));
+  bottom: var(--sk-face-y);
+  left: var(--sk-face-x);
+  right: var(--sk-face-x);
+}
+
+.sk-row.sk-row-accessory .sk-key {
+  padding-top: var(--sk-face-y);
+  padding-bottom: calc(var(--sk-face-y) + var(--sk-pad-bottom));
+}
+.sk-row.sk-row-accessory .sk-key::before {
+  display: none;
+}
+
+.sk-key > .sk-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.sk-icon {
+  display: block;
+  width: var(--sk-icon);
+  height: var(--sk-icon);
+  flex: 0 0 auto;
+}
+
+.sk-icon-shift-fill {
+  width: var(--sk-icon-shift-active);
+  height: var(--sk-icon-shift-active);
+}
+
+.sk-icon-backspace {
+  width: var(--sk-icon);
+  height: var(--sk-icon);
+}
+
+/* Themed emoji/mic assets — CSS picks light vs dark SVG */
+.sk-themed-asset {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.sk-themed-asset img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Default dark assets (app is dark-first); light media overrides. */
+.sk-themed-asset .sk-asset-light {
+  display: none;
+}
+.sk-themed-asset .sk-asset-dark {
+  display: block;
+}
+
+@media (prefers-color-scheme: light) {
+  .sk-themed-asset .sk-asset-light {
+    display: block;
+  }
+  .sk-themed-asset .sk-asset-dark {
+    display: none;
+  }
+}
+
+.sk-icon-emoji {
+  width: 27px;
+  height: 27px;
+}
+
+.sk-icon-mic {
+  width: 19px;
+  height: 29px;
+}
+
+.sk-key.sk-pressed::before,
+.sk-key:active::before {
+  background: var(--sk-key-pressed);
+}
+
+.sk-key.sk-mod::before {
+  background: var(--sk-mod);
+}
+
+.sk-key.sk-mod.sk-pressed::before,
+.sk-key.sk-mod:active::before {
+  background: var(--sk-mod-pressed);
+}
+
+.sk-key.sk-space {
+  font-size: 16px;
+  font-weight: 400;
+  text-transform: lowercase;
+  letter-spacing: 0.01em;
+}
+
+.sk-key.sk-space::before {
+  background: var(--sk-key);
+}
+
+.sk-key.sk-space.sk-pressed::before,
+.sk-key.sk-space:active::before {
+  background: var(--sk-key-pressed);
+}
+
+.sk-key.sk-paste {
+  font-size: 12px;
+  text-transform: lowercase;
+  letter-spacing: 0.01em;
+}
+
+.sk-key.sk-period {
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.sk-key.sk-return::before {
+  background: var(--sk-return);
+}
+
+.sk-key.sk-return {
+  font-size: 15px;
+  font-weight: 400;
+  color: #fff;
+}
+
+.sk-key.sk-return.sk-pressed::before,
+.sk-key.sk-return:active::before {
+  background: var(--sk-return-pressed);
+}
+
+.sk-key.sk-active::before {
+  background: var(--sk-active-bg);
+}
+
+.sk-key.sk-active {
+  color: var(--sk-active-text);
+}
+
+.sk-key.sk-mic.sk-active {
+  color: var(--sk-mic-active);
+  filter: none;
+}
+
+.sk-key.sk-mic.sk-active .sk-themed-asset {
+  /* Keep asset visible; tint via drop-shadow when active */
+  filter: drop-shadow(0 0 0.5px var(--sk-mic-active));
+  opacity: 1;
+}
+
+.sk-key.sk-accessory-key.sk-pressed {
+  opacity: 0.55;
+}
+
+.sk-home-bar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: 134px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--sk-home-bar);
+  opacity: var(--sk-home-bar-opacity);
+  pointer-events: none;
+  z-index: 2;
+}
+
+@media (min-width: 390px) {
+  .soft-keyboard {
+    --sk-row-face: 44px;
+    --sk-face-x: 3.25px;
+    --sk-icon: 23px;
+    --sk-icon-shift-active: 25px;
+  }
+}
+
+@media (min-width: 430px) {
+  .soft-keyboard {
+    --sk-row-face: 45px;
+    --sk-face-x: 3.5px;
+    --sk-icon: 24px;
+    --sk-icon-shift-active: 26px;
+  }
+  .sk-rows {
+    max-width: 460px;
+  }
+  .sk-key {
+    font-size: 23px;
+  }
+  .sk-key::before {
+    border-radius: 5.5px;
+  }
+}

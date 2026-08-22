@@ -31,7 +31,9 @@
 }
 
 :root {
-  color-scheme: dark;
+  /* Keep app chrome dark via tokens, but allow system prefers-color-scheme
+     so the soft keyboard can follow iOS light/dark. */
+  color-scheme: dark light;
   --bg: #151515;
   --panel: #1c1c1c;
   --border: #2a2a2a;
@@ -74,6 +76,22 @@ body,
   font-family: var(--font-sans);
   letter-spacing: -0.011em;
   overscroll-behavior: none;
+  /* Kill iOS double-tap zoom on sidebar / dock / labels. */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sidebar,
+.sidebar *,
+.dock,
+.dock *,
+.soft-keyboard,
+.soft-keyboard * {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 button,
@@ -474,6 +492,28 @@ textarea {
   border-top: 1px solid var(--border);
   background: var(--panel);
   padding: 0.35rem 0.35rem calc(0.35rem + var(--safe-bottom));
+}
+
+.main:has(.soft-keyboard) > .dock {
+  /* Soft keyboard owns the home-indicator inset. */
+  padding-bottom: 0.35rem;
+}
+
+.keychip.jump {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.keychip.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, #121212);
+  color: var(--text);
+}
+
+/* Soft keyboard sits in-flow under the dock; stage already flex-columns. */
+.main > .soft-keyboard {
+  flex: 0 0 auto;
+  z-index: 5;
 }
 
 .keybar-scroll {
