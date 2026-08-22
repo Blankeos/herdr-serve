@@ -116,9 +116,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return err
 	}
 
-	// herdr → websocket
+	// Frame fan-out: never block the herdr stdout reader on a slow websocket.
+	// A busy agent emits frames faster than some clients can drain; the old
+	// path did ws.Write with a 5s timeout and cancelled the whole session on
+	// timeout → dead/live reconnect flap. Instead keep only the latest frame
+	// and drop intermediates under backpressure.
+	outFrames := make(chan []byte, 1)
+	closedReason := make(chan string, 1)
+
 	go func() {
-		defer cancel()
+		defer close(outFrames)
 		sc := bufio.NewScanner(stdout)
 		sc.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 		for sc.Scan() {
@@ -132,10 +139,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					continue
 				}
-				wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
-				err = ws.Write(wctx, websocket.MessageBinary, raw)
-				wcancel()
-				if err != nil {
+				// Coalesce: if a frame is already queued, replace it.
+				select {
+				case <-outFrames:
+				default:
+				}
+				select {
+				case outFrames <- raw:
+				case <-ctx.Done():
 					return
 				}
 			case "terminal.closed":
@@ -143,8 +154,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if msg == "" {
 					msg = "closed"
 				}
-				_ = ws.Close(websocket.StatusNormalClosure, msg)
+				select {
+				case closedReason <- msg:
+				default:
+				}
 				return
+			}
+		}
+		if err := sc.Err(); err != nil && ctx.Err() == nil {
+			log.Printf("herdr control stdout: %v", err)
+		}
+	}()
+
+	go func() {
+		defer cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case reason := <-closedReason:
+				_ = ws.Close(websocket.StatusNormalClosure, reason)
+				return
+			case raw, ok := <-outFrames:
+				if !ok {
+					// herdr stdout ended without an explicit closed frame.
+					_ = ws.Close(websocket.StatusNormalClosure, "stream ended")
+					return
+				}
+				// No short timeout: a temporary network stall must not tear down
+				// a healthy takeover. Real disconnect cancels ctx via the reader.
+				if err := ws.Write(ctx, websocket.MessageBinary, raw); err != nil {
+					return
+				}
 			}
 		}
 	}()

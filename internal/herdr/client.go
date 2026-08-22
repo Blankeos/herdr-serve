@@ -21,29 +21,29 @@ func New(bin ...string) *Client {
 }
 
 type Agent struct {
-	PaneID                 string `json:"pane_id"`
-	TerminalID             string `json:"terminal_id"`
-	WorkspaceID            string `json:"workspace_id"`
-	TabID                  string `json:"tab_id"`
-	Agent                  string `json:"agent"`
-	AgentStatus            string `json:"agent_status"`
-	Focused                bool   `json:"focused"`
-	Cwd                    string `json:"cwd"`
-	ForegroundCwd          string `json:"foreground_cwd"`
-	TerminalTitle          string `json:"terminal_title"`
-	TerminalTitleStripped  string `json:"terminal_title_stripped"`
-	LastOutputAt           any    `json:"last_output_at"`
+	PaneID                string `json:"pane_id"`
+	TerminalID            string `json:"terminal_id"`
+	WorkspaceID           string `json:"workspace_id"`
+	TabID                 string `json:"tab_id"`
+	Agent                 string `json:"agent"`
+	AgentStatus           string `json:"agent_status"`
+	Focused               bool   `json:"focused"`
+	Cwd                   string `json:"cwd"`
+	ForegroundCwd         string `json:"foreground_cwd"`
+	TerminalTitle         string `json:"terminal_title"`
+	TerminalTitleStripped string `json:"terminal_title_stripped"`
+	LastOutputAt          any    `json:"last_output_at"`
 }
 
 type Workspace struct {
-	WorkspaceID  string `json:"workspace_id"`
-	Label        string `json:"label"`
-	Number       int    `json:"number"`
-	Focused      bool   `json:"focused"`
-	AgentStatus  string `json:"agent_status"`
-	ActiveTabID  string `json:"active_tab_id"`
-	PaneCount    int    `json:"pane_count"`
-	TabCount     int    `json:"tab_count"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Number      int    `json:"number"`
+	Focused     bool   `json:"focused"`
+	AgentStatus string `json:"agent_status"`
+	ActiveTabID string `json:"active_tab_id"`
+	PaneCount   int    `json:"pane_count"`
+	TabCount    int    `json:"tab_count"`
 }
 
 type TabCreated struct {
@@ -103,32 +103,33 @@ func extractJSON(b []byte) []byte {
 	return b[i:]
 }
 
-func (c *Client) ListAgents() ([]Agent, error) {
-	res, err := c.runJSON("agent", "list")
+// Snapshot is the cheap one-shot status read. Prefer this over separate
+// agent/workspace list execs — one daemon round-trip instead of two.
+func (c *Client) Snapshot() (agents []Agent, workspaces []Workspace, err error) {
+	res, err := c.runJSON("api", "snapshot")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out struct {
-		Agents []Agent `json:"agents"`
+		Snapshot struct {
+			Agents     []Agent     `json:"agents"`
+			Workspaces []Workspace `json:"workspaces"`
+		} `json:"snapshot"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out.Agents, nil
+	return out.Snapshot.Agents, out.Snapshot.Workspaces, nil
+}
+
+func (c *Client) ListAgents() ([]Agent, error) {
+	agents, _, err := c.Snapshot()
+	return agents, err
 }
 
 func (c *Client) ListWorkspaces() ([]Workspace, error) {
-	res, err := c.runJSON("workspace", "list")
-	if err != nil {
-		return nil, err
-	}
-	var out struct {
-		Workspaces []Workspace `json:"workspaces"`
-	}
-	if err := json.Unmarshal(res, &out); err != nil {
-		return nil, err
-	}
-	return out.Workspaces, nil
+	_, workspaces, err := c.Snapshot()
+	return workspaces, err
 }
 
 func (c *Client) GetAgent(target string) (*Agent, error) {

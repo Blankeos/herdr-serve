@@ -22,7 +22,14 @@ export type Workspace = {
   active_tab_id?: string;
   pane_count?: number;
   tab_count?: number;
+  /** Optional project directory when provided by the backend. */
+  cwd?: string;
+  path?: string;
 };
+
+export function projectFaviconUrl(cwd: string): string {
+  return `/api/project-favicon?cwd=${encodeURIComponent(cwd)}`;
+}
 
 export type CreateAgentRequest = {
   workspace_id: string;

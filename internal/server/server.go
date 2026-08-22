@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/carlo/herdr-serve/internal/favicon"
 	"github.com/carlo/herdr-serve/internal/herdr"
 	"github.com/carlo/herdr-serve/internal/relay"
 	"github.com/carlo/herdr-serve/web"
@@ -19,6 +20,52 @@ type Server struct {
 	client *herdr.Client
 	herdr  string
 	mux    *http.ServeMux
+
+	statusCache *snapshotCache
+}
+
+// snapshotCache serves a serialized payload for a short TTL with
+// single-flight dedupe, so N browser tabs polling concurrently cause at most
+// one daemon round-trip per TTL window instead of one per request.
+type snapshotCache struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	payload []byte
+	expires time.Time
+	loading bool
+}
+
+func newSnapshotCache() *snapshotCache {
+	c := &snapshotCache{}
+	c.cond = sync.NewCond(&c.mu)
+	return c
+}
+
+func (c *snapshotCache) get(fetch func() ([]byte, error)) ([]byte, error) {
+	c.mu.Lock()
+	defer func() { c.mu.Unlock() }()
+	for {
+		if len(c.payload) > 0 && time.Now().Before(c.expires) {
+			return c.payload, nil
+		}
+		if c.loading {
+			c.cond.Wait()
+			continue
+		}
+		c.loading = true
+		c.mu.Unlock()
+		payload, err := fetch()
+		c.mu.Lock()
+		c.loading = false
+		c.cond.Broadcast()
+		if err != nil {
+			// Don't cache failures: next caller retries immediately.
+			return nil, err
+		}
+		c.payload = payload
+		c.expires = time.Now().Add(600 * time.Millisecond)
+		return payload, nil
+	}
 }
 
 func New(client *herdr.Client) *Server {
@@ -26,7 +73,12 @@ func New(client *herdr.Client) *Server {
 	if client != nil && client.Bin != "" {
 		bin = client.Bin
 	}
-	s := &Server{client: client, herdr: bin, mux: http.NewServeMux()}
+	s := &Server{
+		client:      client,
+		herdr:       bin,
+		mux:         http.NewServeMux(),
+		statusCache: newSnapshotCache(),
+	}
 	s.routes()
 	return s
 }
@@ -49,7 +101,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/interrupt", s.handleInterrupt)
 	s.mux.HandleFunc("POST /api/agents/{id}/keys", s.handleKeys)
 	s.mux.HandleFunc("GET /api/workspaces", s.handleListWorkspaces)
-	s.mux.HandleFunc("GET /api/stream", s.handleStream)
+	s.mux.HandleFunc("GET /api/project-favicon", s.handleProjectFavicon)
 	s.mux.Handle("/ws/term", &relay.Handler{Herdr: s.herdr})
 
 	static, err := fs.Sub(web.Dist, "dist")
@@ -109,22 +161,60 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
+func (s *Server) statusSnapshot() (agents []byte, workspaces []byte, err error) {
+	payload, err := s.statusCache.get(func() ([]byte, error) {
+		ags, wss, err := s.client.Snapshot()
+		if err != nil {
+			return nil, err
+		}
+		agentsJSON, err := json.Marshal(map[string]any{"agents": ags})
+		if err != nil {
+			return nil, err
+		}
+		workspacesJSON, err := json.Marshal(map[string]any{"workspaces": wss})
+		if err != nil {
+			return nil, err
+		}
+		// Pack both under one cached blob; split on read.
+		both, err := json.Marshal(map[string]json.RawMessage{
+			"agents":     agentsJSON,
+			"workspaces": workspacesJSON,
+		})
+		return both, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	var both struct {
+		Agents     json.RawMessage `json:"agents"`
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal(payload, &both); err != nil {
+		return nil, nil, err
+	}
+	return both.Agents, both.Workspaces, nil
+}
+
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := s.client.ListAgents()
+	agents, _, err := s.statusSnapshot()
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(agents)
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
-	workspaces, err := s.client.ListWorkspaces()
+	_, workspaces, err := s.statusSnapshot()
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workspaces": workspaces})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(workspaces)
 }
 
 type createAgentBody struct {
@@ -189,14 +279,18 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"kind":        body.Kind,
-		"pane_id":     paneID,
-		"terminal_id": created.RootPane.TerminalID,
-		"tab_id":      created.Tab.TabID,
+		"ok":           true,
+		"kind":         body.Kind,
+		"pane_id":      paneID,
+		"terminal_id":  created.RootPane.TerminalID,
+		"tab_id":       created.Tab.TabID,
 		"workspace_id": body.WorkspaceID,
-		"root_pane":   created.RootPane,
+		"root_pane":    created.RootPane,
 	})
+}
+
+func (s *Server) handleProjectFavicon(w http.ResponseWriter, r *http.Request) {
+	favicon.Serve(w, r)
 }
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -282,72 +376,3 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
-
-// handleStream is a simple SSE poll of agent list + selected pane text.
-// Query: ?target=wW:p1&lines=120&interval_ms=800
-func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "stream unsupported", http.StatusInternalServerError)
-		return
-	}
-	target := r.URL.Query().Get("target")
-	lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
-	if lines <= 0 {
-		lines = 120
-	}
-	intervalMs, _ := strconv.Atoi(r.URL.Query().Get("interval_ms"))
-	if intervalMs < 300 {
-		intervalMs = 800
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher.Flush()
-
-	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
-	defer ticker.Stop()
-
-	var mu sync.Mutex
-	send := func(event string, v any) {
-		mu.Lock()
-		defer mu.Unlock()
-		b, _ := json.Marshal(v)
-		_, _ = w.Write([]byte("event: " + event + "\ndata: "))
-		_, _ = w.Write(b)
-		_, _ = w.Write([]byte("\n\n"))
-		flusher.Flush()
-	}
-
-	push := func() {
-		agents, err := s.client.ListAgents()
-		if err != nil {
-			send("error", map[string]string{"error": err.Error()})
-			return
-		}
-		send("agents", map[string]any{"agents": agents})
-		if target != "" {
-			text, err := s.client.Read(target, lines)
-			if err != nil {
-				send("error", map[string]string{"error": err.Error()})
-				return
-			}
-			send("read", map[string]any{"target": target, "text": text})
-		}
-	}
-
-	push()
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Allow client to switch target via ? — re-read query each tick is overkill;
-			// they reconnect. Keep it simple.
-			push()
-		}
-	}
-}
-

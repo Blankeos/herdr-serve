@@ -1,10 +1,12 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { DragGesture } from "@use-gesture/vanilla";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
   For,
   Show,
   createEffect,
+  createMemo,
   createSignal,
   onCleanup,
   onMount,
@@ -32,6 +34,14 @@ import {
   shortcutToBytes,
   suggestLabel,
 } from "./shortcuts";
+import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
+import { encodeSgrWheelLines } from "./mouseWheel";
+import { ProjectFavicon } from "./ProjectFavicon";
+import { IconSettings, IconCaretDown } from "./icons";
+
+const SIDEBAR_W = 272;
+const UNGROUPED = "ungrouped";
+const MOBILE_MQ = "(max-width: 767.98px)";
 
 const AGENT_KINDS = [
   { id: "crabcode", label: "crabcode" },
@@ -97,20 +107,30 @@ export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelected] = createSignal(""); // terminal_id
   const [error, setError] = createSignal("");
-  const [conn, setConn] = createSignal<"idle" | "connecting" | "live" | "dead">(
-    "idle",
-  );
+  const [conn, setConn] = createSignal<
+    "idle" | "connecting" | "live" | "dead" | "detached"
+  >("idle");
   const [termReady, setTermReady] = createSignal(false);
 
-  const [createOpen, setCreateOpen] = createSignal(false);
   const [workspaces, setWorkspaces] = createSignal<Workspace[]>([]);
-  const [createWorkspace, setCreateWorkspace] = createSignal("");
   const [createKind, setCreateKind] = createSignal("crabcode");
-  const [createLabel, setCreateLabel] = createSignal("");
-  const [createCwd, setCreateCwd] = createSignal("");
+  const [createLabel, setCreateLabel] = createSignal("crabcode");
   const [creating, setCreating] = createSignal(false);
+  const [drawerOpen, setDrawerOpen] = createSignal(false);
+  const [drawerDragging, setDrawerDragging] = createSignal(false);
+  const [drawerX, setDrawerX] = createSignal(0);
+  const [isMobile, setIsMobile] = createSignal(
+    typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
+  );
+  const [expandedIds, setExpandedIds] = createSignal<Record<string, boolean>>({});
+  const [inlineCreateId, setInlineCreateId] = createSignal("");
+  const [expandedSeeded, setExpandedSeeded] = createSignal(false);
 
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [settingsTab, setSettingsTab] = createSignal<"general" | "shortcuts">(
+    "general",
+  );
+  const [scrollMode, setScrollMode] = createSignal<ScrollMode>(loadScrollMode());
   const [shortcutConfig, setShortcutConfig] = createSignal<ShortcutConfig>(
     loadConfig(),
   );
@@ -132,6 +152,9 @@ export default function App() {
   let fit: FitAddon | undefined;
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
+  let activeTermID = "";
+  let reconnectAttempt = 0;
+  let takeoverStolenCount = 0;
   let touchScrollAcc = 0;
   let suppressClickFocus = false;
   let listenTarget: HTMLInputElement | undefined;
@@ -142,6 +165,16 @@ export default function App() {
       JSON.stringify({
         type: "terminal.input",
         text: data,
+      }),
+    );
+  };
+
+  const sendBytes = (data: string) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(
+      JSON.stringify({
+        type: "terminal.input",
+        bytes: btoa(data),
       }),
     );
   };
@@ -157,7 +190,7 @@ export default function App() {
     );
   };
 
-  const sendScroll = (
+  const sendHostScroll = (
     direction: "up" | "down",
     lines: number,
     source: "wheel" | "page_key" | "scrollbar" = "wheel",
@@ -174,11 +207,52 @@ export default function App() {
     );
   };
 
+  const sendScroll = (
+    direction: "up" | "down",
+    lines: number,
+    clientX?: number,
+    clientY?: number,
+  ) => {
+    if (!term || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const n = Math.max(1, Math.min(8, Math.abs(Math.trunc(lines)) || 1));
+    const mode = scrollMode();
+    const tracking = mouseTrackingOn(term);
+    const useMouse = mode === "mouse" || (mode === "auto" && tracking);
+    const useKeys = mode === "keys";
+
+    if (useKeys) {
+      const bytes = scrollKeyBytes(direction).repeat(n);
+      sendBytes(bytes);
+      return;
+    }
+    if (useMouse) {
+      let col = Math.max(1, Math.floor(term.cols / 2));
+      let row = Math.max(1, Math.floor(term.rows / 2));
+      if (clientX != null && clientY != null && term.element) {
+        const rect = term.element.getBoundingClientRect();
+        const cellW = rect.width / Math.max(1, term.cols);
+        const cellH = rect.height / Math.max(1, term.rows);
+        col = Math.max(
+          1,
+          Math.min(term.cols, Math.floor((clientX - rect.left) / cellW) + 1),
+        );
+        row = Math.max(
+          1,
+          Math.min(term.rows, Math.floor((clientY - rect.top) / cellH) + 1),
+        );
+      }
+      sendBytes(encodeSgrWheelLines(direction, col, row, n));
+      return;
+    }
+    sendHostScroll(direction, n, "wheel");
+  };
+
   const disconnect = () => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
     }
+    activeTermID = "";
     if (socket) {
       socket.onopen = null;
       socket.onclose = null;
@@ -195,26 +269,48 @@ export default function App() {
   };
 
   const connect = (termID: string) => {
-    disconnect();
     if (!term || !termID) return;
+    // Already live/connecting to this agent — don't tear down a healthy stream.
+    if (
+      activeTermID === termID &&
+      socket &&
+      (socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
+    disconnect();
+    activeTermID = termID;
 
     const cols = term.cols || 80;
     const rows = term.rows || 24;
     setConn("connecting");
     setError("");
-    term.reset();
+    // Do NOT term.reset() here: clearing the buffer on every agent switch makes
+    // the TUI look like it hard-refreshed even when the stream is fine. Keep the
+    // previous frame until the new takeover writes.
 
     const ws = new WebSocket(wsURL(termID, cols, rows));
     ws.binaryType = "arraybuffer";
     socket = ws;
 
     ws.onopen = () => {
+      reconnectAttempt = 0;
+      takeoverStolenCount = 0;
       setConn("live");
-      sendResize(term!.cols, term!.rows);
+      setError("");
+      // Size already goes out via the WS URL / takeover args. An immediate
+      // terminal.resize forces a full TUI redraw on every agent switch.
     };
 
     ws.onmessage = (ev) => {
       if (!term) return;
+      if (typeof ev.data === "string") {
+        // Text frames are relay control messages. Ignore for status — a list
+        // exec during stream teardown/switch hitches panes.
+        return;
+      }
       if (ev.data instanceof ArrayBuffer) {
         term.write(new Uint8Array(ev.data));
         return;
@@ -225,83 +321,301 @@ export default function App() {
       setError("relay error");
     };
 
-    ws.onclose = () => {
-      setConn("dead");
+    ws.onclose = (ev) => {
       socket = undefined;
-      if (selected() === termID) {
-        reconnectTimer = window.setTimeout(() => connect(termID), 1200);
+      if (selected() !== termID || activeTermID !== termID) {
+        setConn("dead");
+        return;
       }
+      // Another client (often Crabcode) stole the attach. Auto-reconnecting
+      // just fights it in a dead↔live loop with "terminal attach taken over".
+      const reason = (ev.reason || "").toLowerCase();
+      const takenOver =
+        reason.includes("taken over") || reason.includes("attach taken");
+      if (takenOver || ev.code === 1000 && reason.includes("detach")) {
+        setConn("detached");
+        setError(
+          "Terminal attach taken over by another client (e.g. Crabcode). Click Reclaim to take it back.",
+        );
+        return;
+      }
+      setConn("dead");
+      reconnectAttempt = Math.min(reconnectAttempt + 1, 6);
+      const delay = Math.min(1000 * 2 ** (reconnectAttempt - 1), 15000);
+      reconnectTimer = window.setTimeout(() => connect(termID), delay);
     };
   };
 
-  const refreshAgents = async () => {
+  const reclaimTerminal = () => {
+    const id = selected();
+    if (!id) return;
+    setError("");
+    reconnectAttempt = 0;
+    takeoverStolenCount += 1;
+    // Force a fresh takeover even if we think we're already on this id.
+    activeTermID = "";
+    // If Crabcode immediately steals again, a tiny delay reduces thrash.
+    const delay = Math.min(150 * takeoverStolenCount, 800);
+    window.setTimeout(() => connect(id), delay);
+  };
+
+  // Signatures cover only fields the UI renders. `last_output_at` is a live
+  // timestamp that changes on every poll while agents produce output — if it
+  // participated in change detection, <For> (keyed by reference) would rebuild
+  // every sidebar row each cycle: favicon <img> remounts → letter-avatar flash
+  // → the "lags out, then refreshes" jitter every 2.5s.
+  const agentSig = (a: Agent) =>
+    JSON.stringify([
+      a.terminal_id,
+      a.pane_id,
+      a.workspace_id,
+      a.tab_id,
+      a.agent,
+      a.agent_status,
+      a.focused,
+      a.cwd,
+      a.foreground_cwd,
+      a.terminal_title,
+      a.terminal_title_stripped,
+    ]);
+
+  const workspaceSig = (w: Workspace) =>
+    JSON.stringify([
+      w.workspace_id,
+      w.label,
+      w.number,
+      w.focused,
+      w.agent_status,
+      w.active_tab_id,
+      w.pane_count,
+      w.tab_count,
+      w.cwd,
+      w.path,
+    ]);
+
+  // Reconcile by stable signature: reuse the previous item reference whenever
+  // its rendered fields are unchanged so Solid's <For> keeps the existing DOM.
+  const reconcile = <T,>(prev: T[], next: T[], sig: (v: T) => string): T[] => {
+    if (prev.length !== next.length) return next;
+    let identical = true;
+    const out = next.map((n, i) => {
+      const p = prev[i];
+      if (p && sig(p) === sig(n)) return p;
+      identical = false;
+      return n;
+    });
+    return identical ? prev : out;
+  };
+
+  // refresh* returns true when it actually wrote new data, which drives the
+  // adaptive poll cadence (fast while things change, slower at rest).
+  let agentsInFlight = false;
+  let agentsFails = 0;
+  const refreshAgents = async (silent = false): Promise<boolean> => {
+    if (agentsInFlight) return false;
+    agentsInFlight = true;
+    let changed = false;
     try {
       const list = await listAgents();
-      setAgents(list);
+      agentsFails = 0;
+      // Only write when data actually changed — keeps For rows stable so the
+      // sidebar doesn't tear down/rebuild (favicon flash, scroll jump) each poll.
+      setAgents((prev) => {
+        const next = reconcile(prev, list, agentSig);
+        changed = next !== prev;
+        return next;
+      });
       if (!selected() && list.length) {
         const focused = list.find((a) => a.focused) ?? list[0];
         setSelected(focused.terminal_id || focused.pane_id);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Keep last-good list on transient poll failures; surface error only
+      // after repeated failures so the banner doesn't flash the layout.
+      if (!silent || ++agentsFails >= 3) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      agentsInFlight = false;
     }
+    return changed;
   };
 
-  const openCreate = async () => {
-    setError("");
-    setCreateOpen(true);
+  // Status queries exec `herdr` server-side, and those execs measurably
+  // disturb the terminal takeover stream (tmux serializes them). So there is
+  // NO background polling: refreshes are event-driven only (open drawer,
+  // select agent, ws lifecycle, terminal.closed, tab visible, create/delete).
+  // This helper coalesces bursts of those triggers into single round-trips.
+  let statusRefreshTimer: number | undefined;
+  let statusRefreshLast = 0;
+  const scheduleStatusRefresh = (delayMs = 0) => {
+    if (statusRefreshTimer !== undefined) return;
+    const elapsed = Date.now() - statusRefreshLast;
+    const wait = Math.max(delayMs, 1200 - elapsed);
+    statusRefreshTimer = window.setTimeout(async () => {
+      statusRefreshTimer = undefined;
+      statusRefreshLast = Date.now();
+      await Promise.all([refreshAgents(true), refreshWorkspaces(true)]);
+    }, Math.max(0, wait));
+  };
+
+  let wsInFlight = false;
+  let wsFails = 0;
+  const refreshWorkspaces = async (silent = false): Promise<boolean> => {
+    if (wsInFlight) return false;
+    wsInFlight = true;
+    let changed = false;
     try {
       const list = await listWorkspaces();
-      setWorkspaces(list);
-      const preferred =
-        list.find((w) => w.focused)?.workspace_id ||
-        list[0]?.workspace_id ||
-        "";
-      setCreateWorkspace(preferred);
-      if (!createKind()) setCreateKind("crabcode");
-      if (!createLabel()) setCreateLabel("crabcode");
-      // Seed cwd from currently selected agent when available.
-      const cur = current();
-      if (cur && !createCwd()) {
-        setCreateCwd(cur.foreground_cwd || cur.cwd || "");
-      }
+      wsFails = 0;
+      setWorkspaces((prev) => {
+        const next = reconcile(prev, list, workspaceSig);
+        changed = next !== prev;
+        return next;
+      });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!silent || ++wsFails >= 3) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      wsInFlight = false;
     }
+    return changed;
   };
 
-  const submitCreate = async () => {
-    if (!createWorkspace() || creating()) return;
+  const agentId = (a: Agent) => a.terminal_id || a.pane_id;
+
+  const agentLabel = (a: Agent) => {
+    const title = (a.terminal_title_stripped || "").trim();
+    if (title && title.toLowerCase() !== a.agent.toLowerCase()) return title;
+    return a.agent;
+  };
+
+  const agentCwd = (a: Agent | undefined): string => {
+    if (!a) return "";
+    return (a.foreground_cwd || a.cwd || "").trim();
+  };
+
+  type WsGroup = {
+    id: string;
+    label: string;
+    focused: boolean;
+    cwd: string;
+    agents: Agent[];
+  };
+
+  // Groups are the <For> items of the workspace list: they must keep stable
+  // references across polls or every workspace block (agent rows, favicon
+  // <img>, inline create form state) is destroyed and recreated each cycle.
+  let lastGroups: WsGroup[] = [];
+  const groupSig = (g: WsGroup) =>
+    JSON.stringify([g.id, g.label, g.focused, g.cwd, g.agents.map(agentSig)]);
+
+  const workspaceGroups = createMemo<WsGroup[]>(() => {
+    const ws = workspaces();
+    const ag = agents();
+    const known = new Set(ws.map((w) => w.workspace_id));
+    const groups = ws.map((w) => {
+      const agentsIn = ag.filter((a) => a.workspace_id === w.workspace_id);
+      const fromWs = (w.cwd || w.path || "").trim();
+      const fromAgent = agentsIn.map(agentCwd).find(Boolean) || "";
+      return {
+        id: w.workspace_id,
+        label: w.label || w.workspace_id,
+        focused: !!w.focused,
+        cwd: fromWs || fromAgent,
+        agents: agentsIn,
+      };
+    });
+    const orphans = ag.filter((a) => !a.workspace_id || !known.has(a.workspace_id));
+    if (orphans.length) {
+      groups.push({
+        id: UNGROUPED,
+        label: "Ungrouped",
+        focused: false,
+        cwd: orphans.map(agentCwd).find(Boolean) || "",
+        agents: orphans,
+      });
+    }
+    let identical = true;
+    const merged = groups.map((g, i) => {
+      const p = lastGroups[i];
+      if (p && groupSig(p) === groupSig(g)) return p;
+      identical = false;
+      return g;
+    });
+    lastGroups = identical ? lastGroups : merged;
+    return lastGroups;
+  });
+
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setDrawerDragging(false);
+    setDrawerX(0);
+  };
+
+  const openDrawer = () => {
+    setDrawerOpen(true);
+    setDrawerDragging(false);
+    setDrawerX(SIDEBAR_W);
+  };
+
+  const selectAgent = (id: string) => {
+    setSelected(id);
+    // No status refresh here: selection highlight is client-side, and a
+    // refresh execs `herdr` right as the new takeover stream connects.
+    if (isMobile()) closeDrawer();
+  };
+
+  const toggleWorkspace = (id: string) => {
+    setExpandedIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const openInlineCreate = (workspaceId: string, e?: Event) => {
+    e?.stopPropagation();
+    if (workspaceId === UNGROUPED) return;
+    setInlineCreateId(workspaceId);
+    setExpandedIds((prev) => ({ ...prev, [workspaceId]: true }));
+    setCreateKind("crabcode");
+    setCreateLabel("crabcode");
+    setError("");
+  };
+
+  const cancelInlineCreate = () => setInlineCreateId("");
+
+  const submitCreate = async (workspaceId: string) => {
+    if (!workspaceId || workspaceId === UNGROUPED || creating()) return;
     setCreating(true);
     setError("");
     try {
       const kind = createKind() || "crabcode";
       const res = await createAgent({
-        workspace_id: createWorkspace(),
+        workspace_id: workspaceId,
         kind,
-        label: createLabel() || kind,
-        cwd: createCwd() || undefined,
+        label: createLabel().trim() || kind,
         focus: true,
       });
-      setCreateOpen(false);
-      // Poll briefly until the new agent appears in agent list.
-      for (let i = 0; i < 8; i++) {
-        await refreshAgents();
+      setInlineCreateId("");
+      // One coalesced refresh instead of 8× parallel list execs that hitch
+      // every live stream. Optimistically select the new terminal immediately.
+      if (res.terminal_id) selectAgent(res.terminal_id);
+      scheduleStatusRefresh(400);
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        await Promise.all([refreshAgents(true), refreshWorkspaces(true)]);
         const id = res.terminal_id;
         if (id && agents().some((a) => a.terminal_id === id)) {
-          setSelected(id);
+          selectAgent(id);
           break;
         }
         if (res.pane_id) {
           const match = agents().find((a) => a.pane_id === res.pane_id);
           if (match) {
-            setSelected(match.terminal_id || match.pane_id);
+            selectAgent(match.terminal_id || match.pane_id);
             break;
           }
         }
-        await new Promise((r) => setTimeout(r, 400));
       }
-      if (res.terminal_id) setSelected(res.terminal_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -329,7 +643,13 @@ export default function App() {
     setImportText("");
     setExportText(exportConfig(cfg));
     setSettingsMsg("");
+    setSettingsTab("general");
     setSettingsOpen(true);
+  };
+
+  const updateScrollMode = (mode: ScrollMode) => {
+    setScrollMode(mode);
+    saveScrollMode(mode);
   };
 
   const closeSettings = () => {
@@ -475,9 +795,28 @@ export default function App() {
     sendRaw(bytes);
   };
 
+  let lastSentCols = 0;
+  let lastSentRows = 0;
+  let lastHostW = 0;
+  let lastHostH = 0;
   const refit = () => {
+    if (!term || !termHost) return;
+    const rect = termHost.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    // visualViewport scroll/resize fires constantly on mobile; skip no-op fits
+    // because fitAddon.fit() itself re-renders the terminal canvas.
+    if (w === lastHostW && h === lastHostH && lastSentCols > 0) return;
+    lastHostW = w;
+    lastHostH = h;
     fit?.fit();
-    if (term) sendResize(term.cols, term.rows);
+    const cols = term.cols;
+    const rows = term.rows;
+    // Skip no-op resizes — herdr/tmux redraws the whole TUI on every resize.
+    if (cols === lastSentCols && rows === lastSentRows) return;
+    lastSentCols = cols;
+    lastSentRows = rows;
+    sendResize(cols, rows);
   };
 
   onMount(() => {
@@ -511,23 +850,21 @@ export default function App() {
     // Native / Bluetooth keyboard → PTY
     term.onData((data) => sendRaw(data));
 
-    // Desktop wheel:
-    // - If the remote app has mouse tracking enabled, let xterm emit mouse
-    //   reports through onData (don't intercept).
-    // - Otherwise translate to herdr host scrollback (direction + lines).
+    // Desktop / trackpad wheel → sendScroll (mouse reports / keys / host).
+    // Always handle when connected so Claude/opencode mouse mode still scrolls.
+    let wheelAcc = 0;
     term.attachCustomWheelEventHandler((ev) => {
       if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-      // When mouse protocol is active, return false so xterm sends CSI mouse
-      // reports through onData (scrollbar thumb / app scroll work).
-      if (mouseTrackingOn(term)) return false;
-
-      const abs = Math.min(12, Math.max(1, Math.ceil(Math.abs(ev.deltaY) / 40)));
-      const direction = ev.deltaY < 0 ? "up" : "down";
-      sendScroll(direction, abs, "wheel");
+      ev.preventDefault();
+      wheelAcc += ev.deltaY;
+      const line = Math.sign(wheelAcc) * Math.floor(Math.abs(wheelAcc) / 40);
+      if (line === 0) return true;
+      wheelAcc -= line * 40;
+      sendScroll(line < 0 ? "up" : "down", Math.abs(line), ev.clientX, ev.clientY);
       return true;
     });
 
-    // Touch vertical drag → host/app scroll when mouse mode is off.
+    // Touch vertical drag → always scroll somehow (never bare-return on mouse tracking).
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchScrollAcc = 0;
@@ -537,7 +874,6 @@ export default function App() {
     const onTouchMove = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      if (mouseTrackingOn(term)) return;
 
       const touch = ev.touches[0];
       const prev = (termHost as HTMLDivElement & { _ty?: number })._ty;
@@ -549,7 +885,13 @@ export default function App() {
       if (Math.abs(touchScrollAcc) >= linePx) {
         const lines = Math.trunc(touchScrollAcc / linePx);
         touchScrollAcc -= lines * linePx;
-        sendScroll(lines > 0 ? "down" : "up", Math.abs(lines), "wheel");
+        // Finger up → content moves down → scroll down in host buffer terms.
+        sendScroll(
+          lines > 0 ? "down" : "up",
+          Math.abs(lines),
+          touch.clientX,
+          touch.clientY,
+        );
         suppressClickFocus = true;
         ev.preventDefault();
       }
@@ -583,10 +925,87 @@ export default function App() {
     window.visualViewport?.addEventListener("scroll", onResize);
 
     void refreshAgents();
-    const poll = setInterval(() => void refreshAgents(), 2500);
+    void refreshWorkspaces();
+    // No background polling and no visibility/drawer auto-refresh. Status
+    // queries exec herdr and hitch the takeover stream; refresh only after
+    // explicit create/delete (and initial load above).
+
+    const mq = window.matchMedia(MOBILE_MQ);
+    const onMq = () => {
+      const mobile = mq.matches;
+      setIsMobile(mobile);
+      if (!mobile) closeDrawer();
+    };
+    onMq();
+    mq.addEventListener("change", onMq);
+
+    const gesture = new DragGesture(
+      document.documentElement,
+      ({
+        active,
+        movement: [mx],
+        velocity: [vx],
+        direction: [dx],
+        cancel,
+        event,
+        intentional,
+      }) => {
+        if (!mq.matches || settingsOpen()) {
+          cancel();
+          return;
+        }
+        const target = event?.target as Element | null;
+        if (
+          target?.closest(
+            ".sidebar, .sheet, .sheet-backdrop, .inline-create, input, textarea, select",
+          )
+        ) {
+          cancel();
+          return;
+        }
+
+        const open = drawerOpen();
+        // Closed: only drag right opens. Open: any horizontal updates position.
+        if (!open && mx < 0) {
+          cancel();
+          return;
+        }
+        if (!intentional) return;
+
+        const start = open ? SIDEBAR_W : 0;
+        const next = Math.max(0, Math.min(SIDEBAR_W, start + mx));
+
+        if (active) {
+          setDrawerDragging(true);
+          setDrawerX(next);
+          return;
+        }
+
+        setDrawerDragging(false);
+        const flickOpen = vx > 0.45 && dx > 0;
+        const flickClose = vx > 0.45 && dx < 0;
+        if (open) {
+          if (flickClose || next < SIDEBAR_W * 0.6) closeDrawer();
+          else openDrawer();
+        } else if (flickOpen || next > SIDEBAR_W * 0.4) {
+          openDrawer();
+        } else {
+          closeDrawer();
+        }
+      },
+      {
+        axis: "x",
+        filterTaps: true,
+        threshold: 12,
+        pointer: { touch: true },
+        eventOptions: { passive: true },
+      },
+    );
 
     onCleanup(() => {
-      clearInterval(poll);
+      if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer);
+      mq.removeEventListener("change", onMq);
+      gesture.destroy();
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onResize);
@@ -604,208 +1023,311 @@ export default function App() {
     if (id && termReady()) connect(id);
   });
 
+  createEffect(() => {
+    const groups = workspaceGroups();
+    const sel = selected();
+    const selectedWs =
+      agents().find((a) => agentId(a) === sel)?.workspace_id || "";
+    setExpandedIds((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const g of groups) {
+        if (g.focused || g.id === selectedWs || g.agents.some((a) => agentId(a) === sel)) {
+          if (!next[g.id]) {
+            next[g.id] = true;
+            changed = true;
+          }
+        }
+      }
+      if (!expandedSeeded() && groups.length) {
+        for (const g of groups) {
+          if (next[g.id] === undefined) next[g.id] = !!g.focused;
+        }
+        setExpandedSeeded(true);
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  });
+
   const current = () =>
     agents().find(
       (a) => a.terminal_id === selected() || a.pane_id === selected(),
     );
 
-  const agentLabel = (a: Agent) => {
-    const title = (a.terminal_title_stripped || "").trim();
-    if (title && title.toLowerCase() !== a.agent.toLowerCase()) return title;
-    return a.agent;
-  };
+  const shellStyle = () =>
+    drawerDragging()
+      ? { "--drawer-x": `${drawerX()}px` }
+      : undefined;
 
   return (
     <div class="app">
-      <header class="top">
-        <div class="brand-row">
-          <div class="brand">herdr-serve</div>
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="Shortcut settings"
-            title="Shortcuts"
-            onClick={() => openSettings()}
-          >
-            ⚙
-          </button>
-        </div>
-        <div class="top-right">
-          <span class="conn" data-conn={conn()}>
-            {conn()}
-          </span>
-          <Show when={current()}>
-            {(a) => (
-              <div class="status" data-status={a().agent_status}>
-                {a().agent_status}
-              </div>
-            )}
-          </Show>
-        </div>
-      </header>
-
-      <nav class="agents">
-        <For each={agents()}>
-          {(a) => {
-            const id = a.terminal_id || a.pane_id;
-            return (
-              <button
-                type="button"
-                class="agent"
-                data-status={a.agent_status}
-                classList={{ active: id === selected() }}
-                onClick={() => setSelected(id)}
-              >
-                <span class="dot-wrap">
-                  <span class="dot" data-status={a.agent_status} />
-                  <Show when={a.agent_status === "working"}>
-                    <span class="dot-ping" />
-                  </Show>
-                </span>
-                <span class="name">{agentLabel(a)}</span>
-                <span class="meta">
-                  <span class="state" data-status={a.agent_status}>
-                    {a.agent_status}
-                  </span>
-                  <span class="pane">{a.pane_id}</span>
-                </span>
-              </button>
-            );
-          }}
-        </For>
-        <button type="button" class="agent add" onClick={() => void openCreate()}>
-          <span class="plus">+</span>
-          <span class="name">New agent</span>
-          <span class="meta">
-            <span class="state">create</span>
-          </span>
-        </button>
-        <Show when={!agents().length}>
-          <div class="empty">No agents yet — tap + to create one.</div>
-        </Show>
-      </nav>
-
-      <div class="term-wrap">
-        <div class="term" ref={termHost} />
-        <Show when={error()}>
-          <div class="error">{error()}</div>
-        </Show>
-      </div>
-
-      <footer class="keybar" aria-label="Shortcut keys">
-        <div class="keybar-scroll">
-          <For each={shortcutConfig().shortcuts}>
-            {(s) => (
-              <button
-                type="button"
-                class="keychip"
-                title={formatChords(s.chords)}
-                disabled={!selected() || conn() !== "live"}
-                onClick={() => fireShortcut(s)}
-              >
-                {s.label}
-              </button>
-            )}
-          </For>
-          <Show when={!shortcutConfig().shortcuts.length}>
-            <button type="button" class="keychip muted" onClick={() => openSettings()}>
-              Add shortcuts…
-            </button>
-          </Show>
-        </div>
-      </footer>
-
-      <Show when={createOpen()}>
-        <div class="sheet-backdrop" onClick={() => setCreateOpen(false)} />
-        <div class="sheet" role="dialog" aria-label="Create agent">
-          <div class="sheet-head">
-            <div class="sheet-title">New agent</div>
-            <button type="button" class="sheet-close" onClick={() => setCreateOpen(false)}>
-              Close
+      <div
+        class="shell"
+        classList={{
+          "drawer-open": drawerOpen(),
+          dragging: drawerDragging(),
+        }}
+        style={shellStyle() as Record<string, string> | undefined}
+      >
+        <aside class="sidebar" aria-label="Workspaces">
+          <div class="sidebar-brand">
+            <div class="sidebar-brand-title">herdr-serve</div>
+            <div class="sidebar-brand-sub">workspaces</div>
+          </div>
+          <div class="sidebar-scroll">
+            <For each={workspaceGroups()}>
+              {(g) => {
+                const open = () => !!expandedIds()[g.id];
+                return (
+                  <div class="workspace" classList={{ open: open() }}>
+                    <div class="workspace-header">
+                      <button
+                        type="button"
+                        class="workspace-toggle"
+                        onClick={() => toggleWorkspace(g.id)}
+                      >
+                        <span class="workspace-chevron" aria-hidden="true">
+                          <IconCaretDown class="workspace-chevron-icon" />
+                        </span>
+                        <Show when={g.cwd}>
+                          <ProjectFavicon cwd={g.cwd} label={g.label} />
+                        </Show>
+                        <span class="workspace-name">{g.label}</span>
+                        <span class="workspace-count">{g.agents.length}</span>
+                      </button>
+                      <Show when={g.id !== UNGROUPED}>
+                        <button
+                          type="button"
+                          class="workspace-add"
+                          aria-label={`New agent in ${g.label}`}
+                          onClick={(e) => openInlineCreate(g.id, e)}
+                        >
+                          +
+                        </button>
+                      </Show>
+                    </div>
+                    <Show when={open()}>
+                      <div class="workspace-body">
+                        <For each={g.agents}>
+                          {(a) => {
+                            const id = agentId(a);
+                            return (
+                              <button
+                                type="button"
+                                class="agent-row"
+                                classList={{ active: id === selected() }}
+                                onClick={() => selectAgent(id)}
+                              >
+                                <span class="dot-wrap">
+                                  <span class="dot" data-status={a.agent_status} />
+                                  <Show when={a.agent_status === "working"}>
+                                    <span class="dot-ping" />
+                                  </Show>
+                                </span>
+                                <span class="agent-row-name">{agentLabel(a)}</span>
+                              </button>
+                            );
+                          }}
+                        </For>
+                        <Show when={inlineCreateId() === g.id}>
+                          <div class="inline-create">
+                            <div class="kind-row">
+                              <For each={[...AGENT_KINDS]}>
+                                {(k) => (
+                                  <button
+                                    type="button"
+                                    class="kind"
+                                    classList={{ active: createKind() === k.id }}
+                                    onClick={() => {
+                                      setCreateKind(k.id);
+                                      if (
+                                        !createLabel() ||
+                                        AGENT_KINDS.some((x) => x.id === createLabel())
+                                      ) {
+                                        setCreateLabel(k.id);
+                                      }
+                                    }}
+                                  >
+                                    {k.label}
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                            <input
+                              type="text"
+                              value={createLabel()}
+                              placeholder={createKind()}
+                              onInput={(e) => setCreateLabel(e.currentTarget.value)}
+                            />
+                            <div class="inline-create-actions">
+                              <button
+                                type="button"
+                                class="sheet-secondary"
+                                onClick={() => cancelInlineCreate()}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                class="sheet-primary"
+                                disabled={creating()}
+                                onClick={() => void submitCreate(g.id)}
+                              >
+                                {creating() ? "Creating…" : "Create"}
+                              </button>
+                            </div>
+                          </div>
+                        </Show>
+                        <Show when={!g.agents.length && inlineCreateId() !== g.id}>
+                          <div class="empty-inline">No agents</div>
+                        </Show>
+                      </div>
+                    </Show>
+                  </div>
+                );
+              }}
+            </For>
+            <Show when={!workspaceGroups().length}>
+              <div class="empty-inline">No workspaces yet.</div>
+            </Show>
+          </div>
+          <div class="sidebar-footer">
+            <button type="button" class="sidebar-settings-btn" onClick={() => openSettings()}>
+              <IconSettings class="sidebar-settings-icon" />
+              <span>Settings</span>
             </button>
           </div>
+        </aside>
 
-          <label class="field">
-            <span>Workspace</span>
-            <select
-              value={createWorkspace()}
-              onChange={(e) => setCreateWorkspace(e.currentTarget.value)}
+        <div
+          class="scrim"
+          onClick={() => closeDrawer()}
+          aria-hidden={drawerOpen() ? "false" : "true"}
+        />
+
+        <div class="main main-shift">
+          <header class="topbar">
+            <button
+              type="button"
+              class="menu-btn"
+              aria-label="Open sidebar"
+              onClick={() => (drawerOpen() ? closeDrawer() : openDrawer())}
             >
-              <For each={workspaces()}>
-                {(w) => (
-                  <option value={w.workspace_id}>
-                    {w.label || w.workspace_id}
-                    {w.focused ? " · focused" : ""}
-                  </option>
+              ☰
+            </button>
+            <div class="top-right">
+              <span class="conn" data-conn={conn()}>
+                {conn()}
+              </span>
+              <Show when={conn() === "detached" || conn() === "dead"}>
+                <button
+                  type="button"
+                  class="reclaim-btn"
+                  onClick={() => reclaimTerminal()}
+                >
+                  Reclaim
+                </button>
+              </Show>
+              <Show when={current()}>
+                {(a) => (
+                  <div class="status" data-status={a().agent_status}>
+                    {a().agent_status}
+                  </div>
                 )}
-              </For>
-            </select>
-          </label>
+              </Show>
+            </div>
+          </header>
 
-          <label class="field">
-            <span>Agent</span>
-            <div class="kind-row">
-              <For each={[...AGENT_KINDS]}>
-                {(k) => (
+          <Show when={error()}>
+            <div class="error">{error()}</div>
+          </Show>
+
+          <div class="term-wrap">
+            <div class="term" ref={termHost} />
+          </div>
+
+          <nav class="dock" aria-label="Shortcut keys">
+            <div class="keybar-scroll">
+              <For each={shortcutConfig().shortcuts}>
+                {(s) => (
                   <button
                     type="button"
-                    class="kind"
-                    classList={{ active: createKind() === k.id }}
-                    onClick={() => {
-                      setCreateKind(k.id);
-                      if (!createLabel() || AGENT_KINDS.some((x) => x.id === createLabel())) {
-                        setCreateLabel(k.id);
-                      }
-                    }}
+                    class="keychip"
+                    title={formatChords(s.chords)}
+                    disabled={!selected() || conn() !== "live"}
+                    onClick={() => fireShortcut(s)}
                   >
-                    {k.label}
+                    {s.label}
                   </button>
                 )}
               </For>
+              <Show when={!shortcutConfig().shortcuts.length}>
+                <button type="button" class="keychip muted" onClick={() => openSettings()}>
+                  Add shortcuts…
+                </button>
+              </Show>
             </div>
-          </label>
-
-          <label class="field">
-            <span>Tab label</span>
-            <input
-              type="text"
-              value={createLabel()}
-              placeholder={createKind()}
-              onInput={(e) => setCreateLabel(e.currentTarget.value)}
-            />
-          </label>
-
-          <label class="field">
-            <span>Working directory (optional)</span>
-            <input
-              type="text"
-              value={createCwd()}
-              placeholder="/path/to/project"
-              onInput={(e) => setCreateCwd(e.currentTarget.value)}
-            />
-          </label>
-
-          <button
-            type="button"
-            class="sheet-primary"
-            disabled={!createWorkspace() || creating()}
-            onClick={() => void submitCreate()}
-          >
-            {creating() ? "Creating…" : `Create ${createKind()}`}
-          </button>
+          </nav>
         </div>
-      </Show>
+      </div>
 
       <Show when={settingsOpen()}>
         <div class="sheet-backdrop" onClick={() => closeSettings()} />
-        <div class="sheet sheet-tall" role="dialog" aria-label="Shortcut settings">
+        <div class="sheet sheet-tall" role="dialog" aria-label="Settings">
           <div class="sheet-head">
-            <div class="sheet-title">Shortcuts</div>
+            <div class="sheet-title">Settings</div>
             <button type="button" class="sheet-close" onClick={() => closeSettings()}>
               Close
             </button>
           </div>
 
+          <div class="sheet-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              class="sheet-tab"
+              classList={{ active: settingsTab() === "general" }}
+              aria-selected={settingsTab() === "general"}
+              onClick={() => setSettingsTab("general")}
+            >
+              General
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="sheet-tab"
+              classList={{ active: settingsTab() === "shortcuts" }}
+              aria-selected={settingsTab() === "shortcuts"}
+              onClick={() => setSettingsTab("shortcuts")}
+            >
+              Shortcuts
+            </button>
+          </div>
+
+          <Show when={settingsTab() === "general"}>
+            <div class="settings-general">
+              <label class="field">
+                <span>Scroll mode</span>
+                <select
+                  value={scrollMode()}
+                  onChange={(e) => updateScrollMode(e.currentTarget.value as ScrollMode)}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="host">Host scrollback</option>
+                  <option value="mouse">Mouse reports</option>
+                  <option value="keys">Key chords (Ctrl-X K/J)</option>
+                </select>
+              </label>
+              <p class="sheet-help">
+                Auto uses mouse reports when a TUI enables mouse tracking (Claude, opencode),
+                otherwise falls back to host scrollback. Mouse reports and key chords always
+                send those inputs; host always scrolls the terminal buffer.
+              </p>
+            </div>
+          </Show>
+
+          <Show when={settingsTab() === "shortcuts"}>
           <p class="sheet-help">
             Keys appear in the footer bar. Stored in this browser’s localStorage — export JSON to
             copy to another phone.
@@ -1057,6 +1579,7 @@ export default function App() {
               </button>
             </label>
           </details>
+          </Show>
         </div>
       </Show>
     </div>
