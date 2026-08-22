@@ -17,16 +17,17 @@ const (
 )
 
 type Config struct {
-	Mode   Mode
-	Host   string
-	Port   int
-	Herdr  string
-	Open   bool
-	Wizard bool // true if we prompted
+	Mode     Mode
+	Host     string
+	Port     int
+	Herdr    string
+	Password string // empty = auth disabled
+	Open     bool
+	Wizard   bool // true if we prompted
 }
 
 // FromFlags builds a config when the user passed flags (non-interactive).
-func FromFlags(mode, host string, port int, herdr string, open bool) Config {
+func FromFlags(mode, host string, port int, herdr, password string, open bool) Config {
 	m := Mode(mode)
 	switch m {
 	case ModeNetwork, ModeTunnel, ModeLocal:
@@ -47,7 +48,15 @@ func FromFlags(mode, host string, port int, herdr string, open bool) Config {
 	if herdr == "" {
 		herdr = "herdr"
 	}
-	return Config{Mode: m, Host: host, Port: port, Herdr: herdr, Open: open, Wizard: false}
+	return Config{
+		Mode:     m,
+		Host:     host,
+		Port:     port,
+		Herdr:    herdr,
+		Password: strings.TrimSpace(password),
+		Open:     open,
+		Wizard:   false,
+	}
 }
 
 // RunInteractive asks a few questions with enter-to-accept defaults.
@@ -92,6 +101,12 @@ func RunInteractive(stdin *os.File, stdout *os.File) (Config, error) {
 		cfg.Port = p
 	}
 
+	pw, err := prompt(in, stdout, "Password [none]", "")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Password = strings.TrimSpace(pw)
+
 	fmt.Fprintln(stdout, "")
 	return cfg, nil
 }
@@ -120,6 +135,8 @@ func NeedsFlags(args []string) bool {
 		case a == "--host" || strings.HasPrefix(a, "--host="):
 			return true
 		case a == "--port" || strings.HasPrefix(a, "--port="):
+			return true
+		case a == "--password" || strings.HasPrefix(a, "--password="):
 			return true
 		case a == "--tunnel" || a == "--network" || a == "--local":
 			return true

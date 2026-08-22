@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/carlo/herdr-serve/internal/herdr"
@@ -44,15 +45,16 @@ Usage:
 
 Interactive (TTY, no flags):
   herdr-serve serve
-    → mode [network] → port [7700] → enter enter
+    → mode [network] → port [7700] → password [none] → enter
 
 Flags (skip wizard):
-  --mode string   network | tunnel | local   (default network)
-  --host string   bind address (default depends on mode)
-  --port int      port (default 7700)
-  --herdr string  path to herdr binary (default: herdr)
-  --open          open the local URL in a browser
-  -y, --yes       accept defaults, no prompts
+  --mode string       network | tunnel | local   (default network)
+  --host string       bind address (default depends on mode)
+  --port int          port (default 7700)
+  --password string   optional password (default: none)
+  --herdr string      path to herdr binary (default: herdr)
+  --open              open the local URL in a browser
+  -y, --yes           accept defaults, no prompts
 
 Modes:
   network   bind 0.0.0.0 — LAN + Tailscale
@@ -62,6 +64,7 @@ Modes:
 Examples:
   herdr-serve serve
   herdr-serve serve -y
+  herdr-serve serve --password secret
   herdr-serve serve --mode tunnel --port 8080
   herdr-serve serve --mode network --host 0.0.0.0 --port 7700
 
@@ -74,6 +77,7 @@ func runServe(args []string) {
 	mode := fs.String("mode", "", "network | tunnel | local")
 	host := fs.String("host", "", "bind address")
 	port := fs.Int("port", 0, "port")
+	password := fs.String("password", "", "optional password (empty = none)")
 	herdrPath := fs.String("herdr", "herdr", "path to herdr binary")
 	openBrowser := fs.Bool("open", false, "open local URL in browser")
 	yes := fs.Bool("yes", false, "accept defaults, no prompts")
@@ -105,12 +109,15 @@ func runServe(args []string) {
 		}
 		cfg.Herdr = *herdrPath
 		cfg.Open = *openBrowser
+		if strings.TrimSpace(*password) != "" {
+			cfg.Password = strings.TrimSpace(*password)
+		}
 	} else {
 		m := *mode
 		if m == "" {
 			m = string(wizard.ModeNetwork)
 		}
-		cfg = wizard.FromFlags(m, *host, *port, *herdrPath, *openBrowser)
+		cfg = wizard.FromFlags(m, *host, *port, *herdrPath, *password, *openBrowser)
 	}
 
 	if _, err := exec.LookPath(cfg.Herdr); err != nil && cfg.Herdr == "herdr" {
@@ -131,7 +138,7 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	srv := server.New(client)
+	srv := server.New(client, cfg.Password)
 	localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 
 	var cf *tunnel.Cloudflare
@@ -174,6 +181,11 @@ func printReady(cfg wizard.Config, localURL, publicURL string) {
 	fmt.Println()
 	fmt.Printf("  Mode:     %s\n", cfg.Mode)
 	fmt.Printf("  Bind:     %s:%d\n", cfg.Host, cfg.Port)
+	if cfg.Password != "" {
+		fmt.Println("  Password: set")
+	} else {
+		fmt.Println("  Password: none")
+	}
 	fmt.Printf("  Browser:  %s\n", localURL)
 
 	scanURL := localURL

@@ -113,6 +113,9 @@ export function createDomSoftKeyboard(
   let hitCache: KeyHit[] = [];
   let hitCacheAt = 0;
   let nextSyntheticId = -1;
+  /** Ignore key hits until this timestamp (ms). Arms on every open. */
+  let inputQuietUntil = 0;
+  let openGateCleanup: (() => void) | null = null;
 
   const root = document.createElement("div");
   root.className = `soft-keyboard${opts.className ? ` ${opts.className}` : ""}`;
@@ -508,6 +511,39 @@ export function createDomSoftKeyboard(
     return dx * dx + dy * dy < 36 * 36;
   };
 
+  const inputBlocked = (): boolean => performance.now() < inputQuietUntil;
+
+  /** After open, ignore the gesture that revealed us + a short quiet window. */
+  const armOpenGate = () => {
+    openGateCleanup?.();
+    openGateCleanup = null;
+    // Cover long-press (finger still down) and synthetic click after touchend.
+    inputQuietUntil = performance.now() + 450;
+
+    const bumpQuiet = () => {
+      inputQuietUntil = Math.max(inputQuietUntil, performance.now() + 280);
+    };
+    const onUp = () => bumpQuiet();
+    const opts: AddEventListenerOptions = { capture: true, passive: true };
+    window.addEventListener("pointerup", onUp, opts);
+    window.addEventListener("pointercancel", onUp, opts);
+    window.addEventListener("touchend", onUp, opts);
+    window.addEventListener("touchcancel", onUp, opts);
+    window.addEventListener("mouseup", onUp, opts);
+    const timer = window.setTimeout(() => {
+      openGateCleanup?.();
+      openGateCleanup = null;
+    }, 900);
+    openGateCleanup = () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      window.removeEventListener("touchend", onUp, true);
+      window.removeEventListener("touchcancel", onUp, true);
+      window.removeEventListener("mouseup", onUp, true);
+    };
+  };
+
   const endPress = (id: number, commit: boolean, x?: number, y?: number) => {
     const press = active.get(id);
     if (!press) return;
@@ -577,6 +613,7 @@ export function createDomSoftKeyboard(
   const onTouchStart = (ev: TouchEvent) => {
     // No preventDefault on touchstart — sequential tap reliability.
     // touch-action:none on keys blocks scroll. Still PD on move.
+    if (inputBlocked()) return;
     if (!hitCache.length) rebuildHitCache();
 
     for (let i = 0; i < ev.changedTouches.length; i++) {
@@ -631,6 +668,10 @@ export function createDomSoftKeyboard(
 
   const onPointerDown = (ev: PointerEvent) => {
     // Accept all pointerTypes; beginPress / recentlyBeganNear dedupe vs touch.
+    if (inputBlocked()) {
+      if (ev.cancelable) ev.preventDefault();
+      return;
+    }
     if (isGhostFromPrevKey(ev.clientX, ev.clientY) && active.size === 0) {
       if (ev.cancelable) ev.preventDefault();
       return;
@@ -667,6 +708,10 @@ export function createDomSoftKeyboard(
    * when touchstart was dropped.
    */
   const onClick = (ev: MouseEvent) => {
+    if (inputBlocked()) {
+      ev.preventDefault();
+      return;
+    }
     if (isGhostFromPrevKey(ev.clientX, ev.clientY)) {
       ev.preventDefault();
       return;
@@ -814,7 +859,11 @@ export function createDomSoftKeyboard(
         for (const id of [...active.keys()]) endPress(id, false);
         clearRepeat();
         hitCache = [];
+        openGateCleanup?.();
+        openGateCleanup = null;
+        inputQuietUntil = 0;
       } else {
+        armOpenGate();
         scheduleHitCache();
       }
     },
@@ -832,6 +881,8 @@ export function createDomSoftKeyboard(
       destroyed = true;
       if (renderRaf) cancelAnimationFrame(renderRaf);
       if (hitCacheRaf) cancelAnimationFrame(hitCacheRaf);
+      openGateCleanup?.();
+      openGateCleanup = null;
       for (const id of [...active.keys()]) endPress(id, false);
       clearRepeat();
       root.removeEventListener("touchstart", onTouchStart, true);

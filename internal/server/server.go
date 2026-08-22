@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/carlo/herdr-serve/internal/auth"
 	"github.com/carlo/herdr-serve/internal/favicon"
 	"github.com/carlo/herdr-serve/internal/herdr"
 	"github.com/carlo/herdr-serve/internal/relay"
@@ -20,6 +21,7 @@ type Server struct {
 	client *herdr.Client
 	herdr  string
 	mux    *http.ServeMux
+	gate   *auth.Gate
 
 	statusCache *snapshotCache
 }
@@ -68,7 +70,7 @@ func (c *snapshotCache) get(fetch func() ([]byte, error)) ([]byte, error) {
 	}
 }
 
-func New(client *herdr.Client) *Server {
+func New(client *herdr.Client, password string) *Server {
 	bin := "herdr"
 	if client != nil && client.Bin != "" {
 		bin = client.Bin
@@ -77,6 +79,7 @@ func New(client *herdr.Client) *Server {
 		client:      client,
 		herdr:       bin,
 		mux:         http.NewServeMux(),
+		gate:        auth.New(password),
 		statusCache: newSnapshotCache(),
 	}
 	s.routes()
@@ -92,17 +95,21 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
-	s.mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
-	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
-	s.mux.HandleFunc("GET /api/agents/{id}/read", s.handleRead)
-	s.mux.HandleFunc("POST /api/agents/{id}/prompt", s.handlePrompt)
-	s.mux.HandleFunc("POST /api/agents/{id}/approve", s.handleApprove)
-	s.mux.HandleFunc("POST /api/agents/{id}/interrupt", s.handleInterrupt)
-	s.mux.HandleFunc("POST /api/agents/{id}/keys", s.handleKeys)
-	s.mux.HandleFunc("GET /api/workspaces", s.handleListWorkspaces)
-	s.mux.HandleFunc("GET /api/project-favicon", s.handleProjectFavicon)
-	s.mux.Handle("/ws/term", &relay.Handler{Herdr: s.herdr})
+	// Auth endpoints stay public so the UI can unlock.
+	s.mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	s.mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+
+	s.mux.Handle("GET /api/agents", s.requireAuth(http.HandlerFunc(s.handleListAgents)))
+	s.mux.Handle("POST /api/agents", s.requireAuth(http.HandlerFunc(s.handleCreateAgent)))
+	s.mux.Handle("GET /api/agents/{id}", s.requireAuth(http.HandlerFunc(s.handleGetAgent)))
+	s.mux.Handle("GET /api/agents/{id}/read", s.requireAuth(http.HandlerFunc(s.handleRead)))
+	s.mux.Handle("POST /api/agents/{id}/prompt", s.requireAuth(http.HandlerFunc(s.handlePrompt)))
+	s.mux.Handle("POST /api/agents/{id}/approve", s.requireAuth(http.HandlerFunc(s.handleApprove)))
+	s.mux.Handle("POST /api/agents/{id}/interrupt", s.requireAuth(http.HandlerFunc(s.handleInterrupt)))
+	s.mux.Handle("POST /api/agents/{id}/keys", s.requireAuth(http.HandlerFunc(s.handleKeys)))
+	s.mux.Handle("GET /api/workspaces", s.requireAuth(http.HandlerFunc(s.handleListWorkspaces)))
+	s.mux.Handle("GET /api/project-favicon", s.requireAuth(http.HandlerFunc(s.handleProjectFavicon)))
+	s.mux.Handle("/ws/term", s.requireAuth(&relay.Handler{Herdr: s.herdr}))
 
 	static, err := fs.Sub(web.Dist, "dist")
 	uiReady := false
@@ -132,6 +139,41 @@ func (s *Server) routes() {
 	s.mux.Handle("/", spa(fileServer))
 }
 
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.gate.Authorized(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"required": s.gate.Required()})
+}
+
+type loginBody struct {
+	Password string `json:"password"`
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.gate.Required() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": ""})
+		return
+	}
+	var body loginBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !s.gate.AcceptsPassword(body.Password) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid password"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": s.gate.Token()})
+}
+
 func spa(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
@@ -141,7 +183,7 @@ func spa(next http.Handler) http.Handler {
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

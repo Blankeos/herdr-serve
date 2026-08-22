@@ -27,8 +27,34 @@ export type Workspace = {
   path?: string;
 };
 
+const TOKEN_KEY = "herdr_serve_token";
+
+export function getToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearToken() {
+  setToken("");
+}
+
 export function projectFaviconUrl(cwd: string): string {
-  return `/api/project-favicon?cwd=${encodeURIComponent(cwd)}`;
+  const q = new URLSearchParams({ cwd });
+  const token = getToken();
+  if (token) q.set("token", token);
+  return `/api/project-favicon?${q}`;
 }
 
 export type CreateAgentRequest = {
@@ -51,15 +77,34 @@ export type CreateAgentResponse = {
 };
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, {
-    headers: { "content-type": "application/json", ...(init?.headers || {}) },
     ...init,
+    headers,
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(body.error || res.statusText || "request failed");
   }
   return body as T;
+}
+
+export async function authStatus(): Promise<{ required: boolean }> {
+  return json<{ required: boolean }>("/api/auth/status");
+}
+
+export async function authLogin(
+  password: string,
+): Promise<{ ok: boolean; token: string }> {
+  return json<{ ok: boolean; token: string }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
 }
 
 export async function listAgents(): Promise<Agent[]> {

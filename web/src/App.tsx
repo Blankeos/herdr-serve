@@ -14,9 +14,14 @@ import {
 import {
   type Agent,
   type Workspace,
+  authLogin,
+  authStatus,
+  clearToken,
   createAgent,
+  getToken,
   listAgents,
   listWorkspaces,
+  setToken,
 } from "./api";
 import {
   type KeyChord,
@@ -35,9 +40,9 @@ import {
   suggestLabel,
 } from "./shortcuts";
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
-import { encodeSgrWheelLines } from "./mouseWheel";
+import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { IconSettings, IconCaretDown } from "./icons";
+import { IconSettings, IconCaretDown, IconKeyboard } from "./icons";
 import {
   SoftKeyboard,
   createDictation,
@@ -65,6 +70,8 @@ function wsURL(termID: string, cols: number, rows: number): string {
     cols: String(cols),
     rows: String(rows),
   });
+  const token = getToken();
+  if (token) q.set("token", token);
   return `${proto}//${location.host}/ws/term?${q}`;
 }
 
@@ -134,22 +141,32 @@ const flushSoftInsert = () => flushOutbound(true);
 
 function mouseTrackingOn(term: Terminal | undefined): boolean {
   if (!term) return false;
+  // Public API — reliable across xterm builds.
+  try {
+    if (term.modes?.mouseTrackingMode && term.modes.mouseTrackingMode !== "none") {
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  // Private fallback (property is `coreMouseService`, not `_coreMouseService`).
   const core = (
     term as unknown as {
       _core?: {
-        _coreMouseService?: {
+        coreMouseService?: {
           areMouseEventsActive?: boolean;
           activeProtocol?: string;
         };
       };
     }
   )._core;
-  const mouse = core?._coreMouseService;
+  const mouse = core?.coreMouseService;
   if (!mouse) return false;
   if (typeof mouse.areMouseEventsActive === "boolean") {
     return mouse.areMouseEventsActive;
   }
-  return Boolean(mouse.activeProtocol);
+  const proto = mouse.activeProtocol;
+  return Boolean(proto && proto !== "NONE");
 }
 
 function prepareMobileInput(term: Terminal) {
@@ -219,6 +236,11 @@ export default function App() {
   const [exportText, setExportText] = createSignal("");
   const [softKbOpen, setSoftKbOpen] = createSignal(false);
   const [micActive, setMicActive] = createSignal(false);
+  const [authRequired, setAuthRequired] = createSignal(false);
+  const [authReady, setAuthReady] = createSignal(false);
+  const [password, setPassword] = createSignal("");
+  const [authError, setAuthError] = createSignal("");
+  const [authBusy, setAuthBusy] = createSignal(false);
 
   let termHost: HTMLDivElement | undefined;
   let dictation: ReturnType<typeof createDictation> | undefined;
@@ -232,6 +254,54 @@ export default function App() {
   let touchScrollAcc = 0;
   let suppressClickFocus = false;
   let listenTarget: HTMLInputElement | undefined;
+
+  const unlock = async (e?: Event) => {
+    e?.preventDefault();
+    if (authBusy()) return;
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const res = await authLogin(password());
+      setToken(res.token || "");
+      setAuthRequired(false);
+      setPassword("");
+      void refreshAgents();
+      void refreshWorkspaces();
+    } catch (err) {
+      clearToken();
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const bootstrapAuth = async () => {
+    try {
+      const status = await authStatus();
+      if (!status.required) {
+        setAuthRequired(false);
+        setAuthReady(true);
+        return;
+      }
+      const token = getToken();
+      if (token) {
+        try {
+          await listAgents();
+          setAuthRequired(false);
+          setAuthReady(true);
+          return;
+        } catch {
+          clearToken();
+        }
+      }
+      setAuthRequired(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setAuthRequired(false);
+    } finally {
+      setAuthReady(true);
+    }
+  };
 
   const sendRaw = (data: string) => {
     // Always enqueue — never silently drop when WS is reconnecting.
@@ -289,6 +359,61 @@ export default function App() {
     );
   };
 
+  const cellAt = (clientX?: number, clientY?: number) => {
+    if (!term) return { col: 1, row: 1 };
+    let col = Math.max(1, Math.floor(term.cols / 2));
+    let row = Math.max(1, Math.floor(term.rows / 2));
+    if (clientX == null || clientY == null) return { col, row };
+
+    // Prefer the screen element + real cell metrics (handles padding / DPI).
+    const core = (
+      term as unknown as {
+        _core?: {
+          screenElement?: HTMLElement;
+          _renderService?: {
+            dimensions?: {
+              css?: { cell?: { width: number; height: number } };
+            };
+          };
+        };
+      }
+    )._core;
+    const screen =
+      core?.screenElement ??
+      (term.element?.querySelector(".xterm-screen") as HTMLElement | null) ??
+      term.element;
+    if (!screen) return { col, row };
+    const rect = screen.getBoundingClientRect();
+    const cellW =
+      core?._renderService?.dimensions?.css?.cell?.width ||
+      rect.width / Math.max(1, term.cols);
+    const cellH =
+      core?._renderService?.dimensions?.css?.cell?.height ||
+      rect.height / Math.max(1, term.rows);
+    col = Math.max(
+      1,
+      Math.min(term.cols, Math.floor((clientX - rect.left) / cellW) + 1),
+    );
+    row = Math.max(
+      1,
+      Math.min(term.rows, Math.floor((clientY - rect.top) / cellH) + 1),
+    );
+    return { col, row };
+  };
+
+  /**
+   * Send SGR left-click (press+release) into the pane.
+   * Always send — herdr clears DECSET mouse modes before frames reach
+   * xterm, so `term.modes.mouseTrackingMode` stays "none" and can't gate us.
+   * TUIs that enabled mouse on their PTY still consume these reports.
+   */
+  const sendMouseClick = (clientX: number, clientY: number) => {
+    if (!term || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    const { col, row } = cellAt(clientX, clientY);
+    sendBytes(encodeSgrClick(col, row));
+    return true;
+  };
+
   const sendScroll = (
     direction: "up" | "down",
     lines: number,
@@ -308,21 +433,7 @@ export default function App() {
       return;
     }
     if (useMouse) {
-      let col = Math.max(1, Math.floor(term.cols / 2));
-      let row = Math.max(1, Math.floor(term.rows / 2));
-      if (clientX != null && clientY != null && term.element) {
-        const rect = term.element.getBoundingClientRect();
-        const cellW = rect.width / Math.max(1, term.cols);
-        const cellH = rect.height / Math.max(1, term.rows);
-        col = Math.max(
-          1,
-          Math.min(term.cols, Math.floor((clientX - rect.left) / cellW) + 1),
-        );
-        row = Math.max(
-          1,
-          Math.min(term.rows, Math.floor((clientY - rect.top) / cellH) + 1),
-        );
-      }
+      const { col, row } = cellAt(clientX, clientY);
       sendBytes(encodeSgrWheelLines(direction, col, row, n));
       return;
     }
@@ -1038,73 +1149,216 @@ export default function App() {
       return true;
     });
 
-    // Touch vertical drag → always scroll somehow (never bare-return on mouse tracking).
+    // Touch: intentional vertical drag → scroll; otherwise → SGR click.
+    // Soft keyboard opens only via the toolbar shortcut — never on tap.
+    // Finger jitter (~10–20px) must NOT count as scroll or clicks get eaten.
+    // Fast swipe → momentum (macOS-like fling) after finger-up.
+    type TouchMeta = {
+      ty: number;
+      sx: number;
+      sy: number;
+      scrolling: boolean;
+      /** Recent samples for release velocity (px/ms). Finger-up → content down. */
+      samples: { t: number; y: number }[];
+      lastX: number;
+      lastY: number;
+    };
+    const hostTouch = termHost as HTMLDivElement & { _tm?: TouchMeta };
+    const lineHeightPx = () =>
+      Math.max(14, term?.rows ? termHost!.clientHeight / term.rows : 18);
+    // Need ~1.5 rows of movement before we treat the gesture as a scroll.
+    const scrollArmPx = () => Math.max(28, lineHeightPx() * 1.5);
+
+    // --- momentum / fling (mobile) -----------------------------------------
+    // Tunables (vibe later): friction, min release speed, max lines/frame.
+    const FLING_FRICTION = 0.0035; // 1/ms exponential decay
+    const FLING_MIN_V = 0.35; // px/ms to start a fling
+    const FLING_STOP_V = 0.05; // px/ms to stop
+    const FLING_MAX_LINES = 6; // per rAF tick
+    let flingRaf = 0;
+    let flingVel = 0; // px/ms, same sign as touchScrollAcc (finger up → +)
+    let flingAcc = 0;
+    let flingLastT = 0;
+    let flingX = 0;
+    let flingY = 0;
+    const stopFling = () => {
+      if (flingRaf) cancelAnimationFrame(flingRaf);
+      flingRaf = 0;
+      flingVel = 0;
+      flingAcc = 0;
+    };
+    const flingTick = (now: number) => {
+      if (!flingRaf) return;
+      const dt = Math.min(32, Math.max(0, now - flingLastT));
+      flingLastT = now;
+      if (dt <= 0) {
+        flingRaf = requestAnimationFrame(flingTick);
+        return;
+      }
+      // v *= e^(-friction * dt)
+      flingVel *= Math.exp(-FLING_FRICTION * dt);
+      if (Math.abs(flingVel) < FLING_STOP_V) {
+        stopFling();
+        return;
+      }
+      flingAcc += flingVel * dt;
+      const linePx = lineHeightPx();
+      if (Math.abs(flingAcc) >= linePx) {
+        let lines = Math.trunc(flingAcc / linePx);
+        flingAcc -= lines * linePx;
+        if (Math.abs(lines) > FLING_MAX_LINES) {
+          lines = Math.sign(lines) * FLING_MAX_LINES;
+        }
+        sendScroll(
+          lines > 0 ? "down" : "up",
+          Math.abs(lines),
+          flingX,
+          flingY,
+        );
+      }
+      flingRaf = requestAnimationFrame(flingTick);
+    };
+    const startFling = (velPxPerMs: number, x: number, y: number) => {
+      stopFling();
+      if (Math.abs(velPxPerMs) < FLING_MIN_V) return;
+      // Cap absurd flicks (~3px/ms ≈ very fast swipe).
+      flingVel = Math.max(-3, Math.min(3, velPxPerMs));
+      flingAcc = 0;
+      flingX = x;
+      flingY = y;
+      flingLastT = performance.now();
+      flingRaf = requestAnimationFrame(flingTick);
+    };
+    const releaseVelocity = (samples: { t: number; y: number }[]): number => {
+      if (samples.length < 2) return 0;
+      const last = samples[samples.length - 1]!;
+      // Look back ~80ms for a stable estimate.
+      let first = samples[0]!;
+      for (let i = samples.length - 2; i >= 0; i--) {
+        const s = samples[i]!;
+        if (last.t - s.t >= 80) {
+          first = s;
+          break;
+        }
+        first = s;
+      }
+      const dt = last.t - first.t;
+      if (dt < 8) return 0;
+      // Finger-up (y decreases) → positive (scroll down), match touchScrollAcc.
+      return (first.y - last.y) / dt;
+    };
+
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
+      stopFling(); // grab the content — kill leftover momentum
       touchScrollAcc = 0;
       suppressClickFocus = false;
-      (termHost as HTMLDivElement & { _ty?: number })._ty = ev.touches[0].clientY;
+      const t = ev.touches[0];
+      const now = performance.now();
+      hostTouch._tm = {
+        ty: t.clientY,
+        sx: t.clientX,
+        sy: t.clientY,
+        scrolling: false,
+        samples: [{ t: now, y: t.clientY }],
+        lastX: t.clientX,
+        lastY: t.clientY,
+      };
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
       const touch = ev.touches[0];
-      const prev = (termHost as HTMLDivElement & { _ty?: number })._ty;
-      (termHost as HTMLDivElement & { _ty?: number })._ty = touch.clientY;
-      if (prev === undefined) return;
-      const dy = prev - touch.clientY;
-      touchScrollAcc += dy;
-      const linePx = Math.max(12, term?.rows ? termHost!.clientHeight / term.rows : 16);
+      const meta = hostTouch._tm;
+      if (!meta) return;
+      const prev = meta.ty;
+      meta.ty = touch.clientY;
+      meta.lastX = touch.clientX;
+      meta.lastY = touch.clientY;
+      const now = performance.now();
+      meta.samples.push({ t: now, y: touch.clientY });
+      while (meta.samples.length > 8 || (meta.samples[0] && now - meta.samples[0].t > 120)) {
+        meta.samples.shift();
+      }
+      const fromStart = Math.abs(touch.clientY - meta.sy);
+      if (!meta.scrolling) {
+        if (fromStart < scrollArmPx()) return; // still a tap (jitter)
+        meta.scrolling = true;
+        suppressClickFocus = true;
+        touchScrollAcc = meta.sy - touch.clientY; // catch up from start
+      } else {
+        touchScrollAcc += prev - touch.clientY;
+      }
+      const linePx = lineHeightPx();
       if (Math.abs(touchScrollAcc) >= linePx) {
         const lines = Math.trunc(touchScrollAcc / linePx);
         touchScrollAcc -= lines * linePx;
-        // Finger up → content moves down → scroll down in host buffer terms.
         sendScroll(
           lines > 0 ? "down" : "up",
           Math.abs(lines),
           touch.clientX,
           touch.clientY,
         );
-        suppressClickFocus = true;
         ev.preventDefault();
       }
     };
-    // iOS synthesizes mouseup after touchend — ignore it briefly so drawer
-    // swipes / scrolls don't re-open the soft keyboard.
+    // iOS synthesizes mouseup after touchend — ignore briefly.
     let ignoreMouseUntil = 0;
 
-    const onTouchEnd = () => {
-      (termHost as HTMLDivElement & { _ty?: number })._ty = undefined;
+    const onTouchEnd = (ev: TouchEvent) => {
+      const meta = hostTouch._tm;
+      // Click at finger-down cell — more accurate than release after drift.
+      const x = meta?.sx ?? ev.changedTouches[0]?.clientX ?? 0;
+      const y = meta?.sy ?? ev.changedTouches[0]?.clientY ?? 0;
+      const wasScroll = meta?.scrolling || suppressClickFocus;
+      const flingX0 = meta?.lastX ?? x;
+      const flingY0 = meta?.lastY ?? y;
+      const vel = meta ? releaseVelocity(meta.samples) : 0;
+      hostTouch._tm = undefined;
       touchScrollAcc = 0;
       ignoreMouseUntil = performance.now() + 450;
-      if (!suppressClickFocus) {
-        // Mobile: open in-app soft keyboard instead of native IME.
-        // Skip if drawer is open / opening — swipe-to-open used to also
-        // summon the keyboard via this same touchend.
-        if (isMobile()) {
-          if (!drawerOpen()) openSoftKeyboard();
-        } else {
-          term?.focus();
-        }
-      }
       suppressClickFocus = false;
+      if (wasScroll) {
+        startFling(vel, flingX0, flingY0);
+        return;
+      }
+      if (drawerOpen()) return;
+      if (sendMouseClick(x, y)) {
+        ev.preventDefault();
+      } else if (!isMobile()) {
+        term?.focus();
+      }
     };
 
-    // Desktop: focus for hardware typing. Mobile taps go through touchend.
+    // Herdr strips DECSET, so xterm never synthesizes clicks — we always do.
+    // Mobile: ignore synthetic mouseup after touchend (already handled there).
     const onMouseUp = (ev: MouseEvent) => {
       if (ev.button !== 0) return;
       if (isMobile()) {
         if (performance.now() < ignoreMouseUntil) return;
-        if (!drawerOpen() && !suppressClickFocus) openSoftKeyboard();
+        if (!drawerOpen() && !suppressClickFocus) {
+          sendMouseClick(ev.clientX, ev.clientY);
+        }
         return;
+      }
+      if (!suppressClickFocus && !drawerOpen()) {
+        sendMouseClick(ev.clientX, ev.clientY);
       }
       term?.focus();
     };
 
+    const onTouchCancel = () => {
+      stopFling();
+      hostTouch._tm = undefined;
+      touchScrollAcc = 0;
+      suppressClickFocus = false;
+    };
+
     termHost!.addEventListener("touchstart", onTouchStart, { passive: true });
     termHost!.addEventListener("touchmove", onTouchMove, { passive: false });
-    termHost!.addEventListener("touchend", onTouchEnd, { passive: true });
+    termHost!.addEventListener("touchend", onTouchEnd, { passive: false });
+    termHost!.addEventListener("touchcancel", onTouchCancel, { passive: true });
     termHost!.addEventListener("mouseup", onMouseUp);
 
     const onResize = () => refit();
@@ -1112,8 +1366,12 @@ export default function App() {
     window.visualViewport?.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("scroll", onResize);
 
-    void refreshAgents();
-    void refreshWorkspaces();
+    void bootstrapAuth().then(() => {
+      if (!authRequired()) {
+        void refreshAgents();
+        void refreshWorkspaces();
+      }
+    });
     // No background polling and no visibility/drawer auto-refresh. Status
     // queries exec herdr and hitch the takeover stream; refresh only after
     // explicit create/delete (and initial load above).
@@ -1202,6 +1460,7 @@ export default function App() {
     } as AddEventListenerOptions);
 
     onCleanup(() => {
+      stopFling();
       if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer);
       mq.removeEventListener("change", onMq);
       gesture.destroy();
@@ -1214,6 +1473,7 @@ export default function App() {
       termHost?.removeEventListener("touchstart", onTouchStart);
       termHost?.removeEventListener("touchmove", onTouchMove);
       termHost?.removeEventListener("touchend", onTouchEnd);
+      termHost?.removeEventListener("touchcancel", onTouchCancel);
       termHost?.removeEventListener("mouseup", onMouseUp);
       disconnect();
       term?.dispose();
@@ -1242,6 +1502,10 @@ export default function App() {
 
   createEffect(() => {
     const id = selected();
+    if (!authReady() || authRequired()) {
+      disconnect();
+      return;
+    }
     if (id && termReady()) connect(id);
   });
 
@@ -1284,6 +1548,29 @@ export default function App() {
 
   return (
     <div class="app">
+      <Show when={authReady() && authRequired()}>
+        <div class="auth-overlay" role="dialog" aria-modal="true" aria-label="Password">
+          <form class="auth-panel" onSubmit={unlock}>
+            <h1 class="auth-title">Unlock herdr-serve</h1>
+            <p class="auth-copy">Enter the password set when starting the server.</p>
+            <div class="auth-row">
+              <input
+                class="auth-input"
+                type="password"
+                value={password()}
+                onInput={(e) => setPassword(e.currentTarget.value)}
+                autocomplete="current-password"
+                placeholder="password"
+                autofocus
+              />
+              <button class="auth-submit" type="submit" disabled={authBusy()}>
+                Unlock
+              </button>
+            </div>
+            <div class="auth-error">{authError()}</div>
+          </form>
+        </div>
+      </Show>
       <div
         class="shell"
         classList={{
@@ -1474,14 +1761,15 @@ export default function App() {
               <Show when={isMobile()}>
                 <button
                   type="button"
-                  class="keychip"
+                  class="keychip keychip-icon"
                   classList={{ active: softKbOpen() }}
                   title="Toggle on-screen keyboard"
+                  aria-label="Toggle on-screen keyboard"
                   onClick={() =>
                     softKbOpen() ? closeSoftKeyboard() : openSoftKeyboard()
                   }
                 >
-                  Keyboard
+                  <IconKeyboard class="keychip-svg" />
                 </button>
                 <button
                   type="button"
