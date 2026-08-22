@@ -62,7 +62,7 @@ if [ -f "web/package.json" ]; then
 fi
 
 echo "🦋 Regenerating CHANGELOG.md..."
-git cliff --tag "v${NEW}" -o CHANGELOG.md
+git cliff --tag "v${NEW}" --offline -o CHANGELOG.md
 
 echo "🦋 Building UI so go install embeds the latest web/dist..."
 (cd web && npm ci && npm run build)
