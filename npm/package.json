@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "Remotely use herdr agents anywhere — no plugin, just works.",
   "bin": {
-    "herdr-serve": "./bin.js"
+    "herdr-serve": "bin.js"
   },
   "scripts": {
     "postinstall": "node install.js"
