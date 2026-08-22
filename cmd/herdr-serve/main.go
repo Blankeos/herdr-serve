@@ -7,15 +7,29 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
-	"github.com/carlo/herdr-serve/internal/herdr"
-	"github.com/carlo/herdr-serve/internal/qr"
-	"github.com/carlo/herdr-serve/internal/server"
-	"github.com/carlo/herdr-serve/internal/tunnel"
-	"github.com/carlo/herdr-serve/internal/wizard"
+	"github.com/Blankeos/herdr-serve/internal/herdr"
+	"github.com/Blankeos/herdr-serve/internal/qr"
+	"github.com/Blankeos/herdr-serve/internal/server"
+	"github.com/Blankeos/herdr-serve/internal/tunnel"
+	"github.com/Blankeos/herdr-serve/internal/wizard"
 )
+
+// Set via -ldflags "-X main.version=..." by goreleaser / just build.
+var version = "dev"
+
+func resolveVersion() string {
+	if version != "dev" && version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return version
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,7 +41,7 @@ func main() {
 	case "serve":
 		runServe(os.Args[2:])
 	case "version", "-v", "--version":
-		fmt.Println("herdr-serve 0.1.0")
+		fmt.Printf("herdr-serve %s\n", resolveVersion())
 	case "help", "-h", "--help":
 		printUsage()
 	default:

@@ -2,6 +2,18 @@
 
 Opt-in phone UI for Herder agents — **live terminal relay**, not a screenshot poller.
 
+### Install
+
+```sh
+brew install blankeos/tap/herdr-serve # Homebrew (macOS/Linux)
+npm install -g herdr-serve            # or npm
+bun install -g herdr-serve            # or bun
+go install github.com/Blankeos/herdr-serve/cmd/herdr-serve@latest # or go
+curl -sSL https://raw.githubusercontent.com/Blankeos/herdr-serve/main/install.sh | sh # or linux/macos (via curl)
+```
+
+### From source
+
 ```bash
 just setup
 just build
@@ -67,7 +79,7 @@ This is **not** a git fork — same product intent (opt-in phone UI over a live 
 |---|---|---|
 | Server | Node.js | Go (`cmd/herdr-serve`) |
 | UI | `client/` Vite app | `web/` Vite app, embedded via `web/embed.go` |
-| Packaging | npm package / plugin | single binary + optional `herdr-plugin.toml` |
+| Packaging | npm package / plugin | Go binary (GitHub Releases / Homebrew / npm / `go install`) + optional `herdr-plugin.toml` |
 
 ## Requirements
 

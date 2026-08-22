@@ -1,0 +1,46 @@
+{
+  "name": "herdr-serve",
+  "version": "0.1.0",
+  "description": "Opt-in phone UI — live terminal relay for Herder agents",
+  "bin": {
+    "herdr-serve": "./bin.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Blankeos/herdr-serve.git"
+  },
+  "keywords": [
+    "herdr",
+    "herder",
+    "cli",
+    "terminal",
+    "relay",
+    "phone"
+  ],
+  "author": "Blankeos",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Blankeos/herdr-serve/issues"
+  },
+  "homepage": "https://github.com/Blankeos/herdr-serve#readme",
+  "engines": {
+    "node": ">=14"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin.js",
+    "install.js",
+    "README.md"
+  ]
+}

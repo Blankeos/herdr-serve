@@ -1,0 +1,4 @@
+bin/
+*.tar.xz
+*.zip
+node_modules/

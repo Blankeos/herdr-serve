@@ -1,4 +1,4 @@
-module github.com/carlo/herdr-serve
+module github.com/Blankeos/herdr-serve
 
 go 1.25.0
 

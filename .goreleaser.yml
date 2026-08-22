@@ -1,0 +1,62 @@
+version: 2
+
+project_name: herdr-serve
+
+before:
+  hooks:
+    - go mod tidy
+    - sh -c "cd web && npm ci && npm run build"
+
+builds:
+  - id: herdr-serve
+    main: ./cmd/herdr-serve
+    binary: herdr-serve
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: ["tar.xz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    # Match cargo-dist / npm install.js target triples
+    name_template: '{{ .ProjectName }}-{{ if eq .Arch "amd64" }}x86_64{{ else if eq .Arch "arm64" }}aarch64{{ else }}{{ .Arch }}{{ end }}-{{ if eq .Os "darwin" }}apple-darwin{{ else if eq .Os "linux" }}unknown-linux-gnu{{ else if eq .Os "windows" }}pc-windows-msvc{{ else }}{{ .Os }}{{ end }}'
+
+checksum:
+  name_template: sha256.sum
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+release:
+  draft: false
+  replace_existing_draft: true
+  name_template: "v{{.Version}}"
+
+brews:
+  - repository:
+      owner: Blankeos
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/Blankeos/herdr-serve"
+    description: "Opt-in phone UI — live terminal relay for Herder agents"
+    license: "MIT"
+    install: |
+      bin.install "herdr-serve"
+    test: |
+      system "#{bin}/herdr-serve", "version"

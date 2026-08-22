@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/carlo/herdr-serve/internal/auth"
-	"github.com/carlo/herdr-serve/internal/favicon"
-	"github.com/carlo/herdr-serve/internal/herdr"
-	"github.com/carlo/herdr-serve/internal/relay"
-	"github.com/carlo/herdr-serve/web"
+	"github.com/Blankeos/herdr-serve/internal/auth"
+	"github.com/Blankeos/herdr-serve/internal/favicon"
+	"github.com/Blankeos/herdr-serve/internal/herdr"
+	"github.com/Blankeos/herdr-serve/internal/relay"
+	"github.com/Blankeos/herdr-serve/web"
 )
 
 type Server struct {

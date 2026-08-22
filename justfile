@@ -14,25 +14,25 @@ ui:
 
 # Build the herdr-serve binary (UI must be built first for embed)
 build: ui
-  go build -o bin/herdr-serve ./cmd/herdr-serve
+  go build -ldflags "-X main.version=$(cat VERSION)" -o bin/herdr-serve ./cmd/herdr-serve
 
 # Run with wizard (TTY) or pass args after --
 serve *args:
-  go run ./cmd/herdr-serve serve {{args}}
+  go run -ldflags "-X main.version=$(cat VERSION)" ./cmd/herdr-serve serve {{args}}
 
 # Non-interactive network mode
 serve-network port="7700":
-  go run ./cmd/herdr-serve serve --mode network --port {{port}} -y
+  go run -ldflags "-X main.version=$(cat VERSION)" ./cmd/herdr-serve serve --mode network --port {{port}} -y
 
 # Non-interactive trycloudflare tunnel
 serve-tunnel port="7700":
-  go run ./cmd/herdr-serve serve --mode tunnel --port {{port}} -y
+  go run -ldflags "-X main.version=$(cat VERSION)" ./cmd/herdr-serve serve --mode tunnel --port {{port}} -y
 
 # Dev: Go API on :7700 + Vite on :5173 (proxied /api)
 dev:
   #!/usr/bin/env bash
   set -euo pipefail
-  go run ./cmd/herdr-serve serve --mode local --port 7700 -y &
+  go run -ldflags "-X main.version=$(cat VERSION)" ./cmd/herdr-serve serve --mode local --port 7700 -y &
   api=$!
   trap 'kill $api 2>/dev/null || true' EXIT
   cd web && npm run dev -- --host 0.0.0.0
@@ -47,3 +47,7 @@ clean:
   rm -rf bin web/dist
   mkdir -p web/dist
   touch web/dist/.gitkeep
+
+# Release: bump VERSION + npm, changelog, commit, tag, push
+tag:
+  ./tag_and_release.sh
