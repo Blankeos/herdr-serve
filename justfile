@@ -53,5 +53,6 @@ sync_readme:
   cp README.md npm/README.md
 
 # Release: bump VERSION + npm, changelog, commit, tag, push
+# Must be run from an up-to-date main — the script will refuse other branches.
 tag: sync_readme
   ./tag_and_release.sh

@@ -11,6 +11,21 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+branch="$(git branch --show-current)"
+if [[ "$branch" != "main" ]]; then
+    echo "❗ Releases must be tagged from main (currently on '${branch:-detached HEAD}')."
+    echo "   git checkout main && git pull && just tag"
+    exit 1
+fi
+
+echo "🦋 Fetching origin/main..."
+git fetch --quiet origin main
+
+if ! git merge-base --is-ancestor origin/main HEAD; then
+    echo "❗ local main has diverged from origin/main. Pull/rebase first."
+    exit 1
+fi
+
 NAME="herdr-serve"
 CURRENT="$(tr -d '[:space:]' < VERSION)"
 echo "🦋 What kind of change is this for $NAME? (current version is $CURRENT) [patch, minor, major] >"
@@ -78,6 +93,5 @@ git commit -m "release: ${NAME} v${NEW}"
 echo "🦋 Creating git tag v${NEW}"
 git tag "v${NEW}"
 
-echo "🦋 Pushing..."
-git push --tags
-git push
+echo "🦋 Pushing release commit and tag atomically..."
+git push --atomic origin main "v${NEW}"
