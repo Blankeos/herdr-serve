@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -13,9 +15,15 @@ import (
 	"github.com/Blankeos/herdr-serve/internal/auth"
 	"github.com/Blankeos/herdr-serve/internal/favicon"
 	"github.com/Blankeos/herdr-serve/internal/herdr"
+	"github.com/Blankeos/herdr-serve/internal/push"
 	"github.com/Blankeos/herdr-serve/internal/relay"
 	"github.com/Blankeos/herdr-serve/web"
 )
+
+func init() {
+	// Serve web manifests consistently on systems without a MIME database entry.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 type Server struct {
 	client *herdr.Client
@@ -24,6 +32,11 @@ type Server struct {
 	gate   *auth.Gate
 
 	statusCache *snapshotCache
+
+	// push owns VAPID keys, subscriptions, and the background
+	// working->done/idle/blocked monitor. Nil when push init failed
+	// (server keeps running; push endpoints are unmounted).
+	push *push.Service
 }
 
 // snapshotCache serves a serialized payload for a short TTL with
@@ -82,7 +95,16 @@ func New(client *herdr.Client, password string) *Server {
 		gate:        auth.New(password),
 		statusCache: newSnapshotCache(),
 	}
+	// Push is best-effort: a broken state file must never take the API down.
+	if psvc, err := push.NewService(); err != nil {
+		log.Printf("push: disabled (%v)", err)
+	} else {
+		s.push = psvc
+	}
 	s.routes()
+	s.mountPushRoutes()
+	s.mountUploadRoutes()
+	s.startPushMonitor()
 	return s
 }
 
@@ -143,7 +165,7 @@ func (s *Server) routes() {
 		return
 	}
 	fileServer := http.FileServer(http.FS(static))
-	s.mux.Handle("/", spa(fileServer))
+	s.mux.Handle("/", spa(pushSWHeaders(fileServer)))
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {

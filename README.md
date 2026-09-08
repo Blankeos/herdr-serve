@@ -1,3 +1,5 @@
+<img src="web/public/icon-192.png" alt="herdr-serve" width="64" height="64">
+
 # herdr-serve
 
 🥘 Remotely use herdr agents anywhere — no plugin, just works.

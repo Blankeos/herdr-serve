@@ -13,7 +13,8 @@
   --sk-accessory-face: 28px;
   --sk-accessory-row: calc(var(--sk-accessory-face) + var(--sk-face-y) * 2);
   --sk-icon: 22px;
-  --sk-icon-shift-active: 24px;
+  /* Shift fill/outline share one box so ⇧ never jumps size between layers. */
+  --sk-icon-shift-active: 22px;
 
   /* Dark defaults (matches current app + iOS dark keyboard) */
   --sk-bg: #0b0b0d;
@@ -118,7 +119,9 @@
 .sk-spacer.sk-spacer-hit {
   pointer-events: auto;
   cursor: pointer;
-  touch-action: manipulation;
+  /* Match keys (none): the ⇧–Z / M–⌫ optical gaps participate in
+     slide-to-type, so the browser must never claim the gesture. */
+  touch-action: none;
 }
 
 .sk-key {
@@ -198,8 +201,9 @@
 }
 
 .sk-icon-shift-fill {
-  width: var(--sk-icon-shift-active);
-  height: var(--sk-icon-shift-active);
+  /* Same box as outline — ⇧ must not grow when shifting layers. */
+  width: var(--sk-icon);
+  height: var(--sk-icon);
 }
 
 .sk-icon-backspace {
@@ -266,6 +270,15 @@
 
 .sk-key.sk-mod.sk-pressed::before {
   background: var(--sk-mod-pressed);
+}
+
+/* 123 / ABC / #+= text mods share one size so the bottom-left and punct-row
+   edge keys never jump when layers switch. Icons (⇧/⌫) are sized via
+   --sk-icon and are unaffected by this. */
+.sk-key.sk-mod {
+  font-size: 16px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
 }
 
 .sk-key.sk-space {
@@ -350,7 +363,7 @@
     --sk-row-face: 44px;
     --sk-face-x: 3.25px;
     --sk-icon: 23px;
-    --sk-icon-shift-active: 25px;
+    --sk-icon-shift-active: 23px;
   }
 }
 
@@ -359,7 +372,7 @@
     --sk-row-face: 45px;
     --sk-face-x: 3.5px;
     --sk-icon: 24px;
-    --sk-icon-shift-active: 26px;
+    --sk-icon-shift-active: 24px;
   }
   .sk-rows {
     max-width: 460px;
@@ -367,7 +380,34 @@
   .sk-key {
     font-size: 23px;
   }
+  /* Keep layer-switch text mods stable at large sizes too. */
+  .sk-key.sk-mod {
+    font-size: 17px;
+  }
   .sk-key::before {
     border-radius: 5.5px;
+  }
+}
+
+/* Mobile hardware cursor: our soft keyboard never focuses xterm's helper
+   textarea (that would open the native IME), so xterm stays blurred and
+   renders its hollow `outline` cursor. The 1px hollow box is nearly
+   invisible on phones — force a solid block so Bluetooth/hardware and
+   soft-keyboard users both see where input lands.
+   Lives here (owned soft-keyboard CSS, always loaded) so the fix applies
+   without touching App.tsx/styles.css; the canonical home is styles.css
+   (see report) with `cursorInactiveStyle: "block"` on the Terminal. */
+.term .xterm .xterm-cursor.xterm-cursor-outline {
+  background-color: #6c8ed8 !important;
+  color: #101010 !important;
+  outline: none !important;
+  opacity: 1 !important;
+}
+@media (pointer: coarse) {
+  .term .xterm .xterm-cursor.xterm-cursor-outline {
+    background-color: #6c8ed8 !important;
+    color: #101010 !important;
+    outline: none !important;
+    opacity: 1 !important;
   }
 }

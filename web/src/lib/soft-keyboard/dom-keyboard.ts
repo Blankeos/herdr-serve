@@ -7,7 +7,7 @@ import {
   SHIFT_FILL,
   SHIFT_OUTLINE,
 } from "./icons";
-import { layoutRows } from "./layouts";
+import { isAutoReturnPunct, layoutRows } from "./layouts";
 import type {
   SoftKeyDef,
   SoftKeyId,
@@ -17,6 +17,8 @@ import type {
 
 const REPEAT_DELAY_MS = 420;
 const REPEAT_EVERY_MS = 55;
+/** Second ⇧ tap within this window enables caps; a slower re-tap dismisses shift. */
+const SHIFT_DOUBLE_TAP_MS = 350;
 
 export type DomSoftKeyboardOptions = SoftKeyboardHandlers & {
   className?: string;
@@ -84,6 +86,7 @@ export function createDomSoftKeyboard(
 
   let layout: SoftKeyboardLayout = "letters";
   let shiftLatched = false;
+  let lastShiftTapAt = 0;
   let micActive = Boolean(opts.micActive);
   let open = false;
 
@@ -207,17 +210,33 @@ export function createDomSoftKeyboard(
   const scheduleRender = () => {
     if (destroyed) return;
     renderPending = true;
+    // Defer while a finger is down so slide-to-type never swaps under the thumb.
     if (active.size > 0) return;
-    if (renderRaf) return;
-    renderRaf = window.requestAnimationFrame(() => {
-      renderRaf = 0;
-      if (destroyed || active.size > 0) return;
-      if (renderPending) render();
-    });
+    // Idle: render synchronously for native-instant layer switches.
+    // rAF-only rendering left a one-frame window where fast sequential taps
+    // hit-tested against the previous layer's rects (123 → ABC double-type).
+    render();
   };
 
-  const afterChar = () => {
+  /**
+   * Native post-insert layer policy.
+   * - Shifted one-shot (not caps) always unlatches to letters.
+   * - Numbers/symbols auto-return to ABC only for iOS punct set
+   *   (".", ",", "?", "!", "'") — e.g. 123 → ' → ABC to keep typing words.
+   *   Digits, "-/:;()$&@\"", "[ ]{ }#%^ *+= _\|~<>€£¥•", space, and return
+   *   stay on their layer.
+   */
+  const afterCharInsert = (value: string) => {
     if (layout === "shifted" && !shiftLatched) {
+      layout = "letters";
+      scheduleRender();
+      return;
+    }
+    if (
+      (layout === "numbers" || layout === "symbols") &&
+      isAutoReturnPunct(value)
+    ) {
+      shiftLatched = false;
       layout = "letters";
       scheduleRender();
     }
@@ -232,7 +251,7 @@ export function createDomSoftKeyboard(
     switch (id) {
       case "space":
         handlers.onInsert(" ");
-        afterChar();
+        afterCharInsert(" ");
         break;
       case "return":
         handlers.onReturn();
@@ -241,16 +260,30 @@ export function createDomSoftKeyboard(
         handlers.onBackspace();
         break;
       case "shift":
-        if (layout === "shifted") {
-          if (shiftLatched) {
+        {
+          const now = performance.now();
+          const doubleTap = now - lastShiftTapAt < SHIFT_DOUBLE_TAP_MS;
+          lastShiftTapAt = now;
+          if (layout === "shifted") {
+            if (shiftLatched) {
+              // Caps on → tap turns caps off.
+              shiftLatched = false;
+              layout = "letters";
+            } else if (doubleTap) {
+              // Fast re-tap while shifted → caps lock (stays shifted).
+              shiftLatched = true;
+            } else {
+              // Slow re-tap while shifted → dismiss shift (native).
+              shiftLatched = false;
+              layout = "letters";
+            }
+          } else if (layout === "letters") {
             shiftLatched = false;
-            layout = "letters";
+            layout = "shifted";
           } else {
-            shiftLatched = true;
+            // No ⇧ key on 123/#+= layers; ignore stray shift actions.
+            break;
           }
-        } else {
-          shiftLatched = false;
-          layout = "shifted";
         }
         scheduleRender();
         break;
@@ -296,13 +329,13 @@ export function createDomSoftKeyboard(
         const ch =
           layout === "shifted" ? key.alias.toUpperCase() : key.alias.toLowerCase();
         handlers.onInsert(ch);
-        afterChar();
+        afterCharInsert(ch);
       }
       return;
     }
     if (key.kind === "char") {
       handlers.onInsert(key.value);
-      afterChar();
+      afterCharInsert(key.value);
       return;
     }
     if (key.id === "backspace") return; // already handled on press
@@ -844,7 +877,11 @@ export function createDomSoftKeyboard(
     }
     rowsEl.replaceChildren(frag);
     root.classList.toggle("mic-on", micActive);
-    scheduleHitCache();
+    // Rebuild hit rects synchronously so the next sequential tap (often
+    // <16ms later on iOS) hit-tests the fresh layer, not the previous one.
+    // rAF-only refresh left 123→ABC fast-typing hitting stale numbers rects.
+    if (!root.hidden) rebuildHitCache();
+    else hitCache = [];
   };
 
   render();
@@ -862,9 +899,27 @@ export function createDomSoftKeyboard(
         openGateCleanup?.();
         openGateCleanup = null;
         inputQuietUntil = 0;
+        // Native dismiss clears one-shot shift only; caps (latched) survives.
+        if (layout === "shifted" && !shiftLatched) {
+          layout = "letters";
+          renderPending = true;
+        }
+        // A dismissed shift gesture never carries into the next session.
+        lastShiftTapAt = 0;
       } else {
+        // Native open always starts on ABC, never on a stale 123/#+= layer.
+        // Preserve letters/shifted/caps as-is; only numbers/symbols reset.
+        if (layout === "numbers" || layout === "symbols") {
+          layout = "letters";
+          shiftLatched = false;
+          lastShiftTapAt = 0;
+          // Render now (no active presses while closed) so first tap rects
+          // are ABC rects, not leftover numbers rects.
+          if (active.size === 0) render();
+          else renderPending = true;
+        }
         armOpenGate();
-        scheduleHitCache();
+        if (!renderPending) scheduleHitCache();
       }
     },
     setMicActive(activeMic) {

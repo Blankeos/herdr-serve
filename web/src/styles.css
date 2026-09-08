@@ -142,6 +142,25 @@ textarea {
   letter-spacing: -0.02em;
 }
 
+.auth-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.auth-brand-row .auth-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.auth-brand-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  flex: 0 0 auto;
+  display: block;
+}
+
 .auth-copy {
   margin: 0.45rem 0 1rem;
   color: var(--muted);
@@ -652,6 +671,68 @@ textarea {
   z-index: 40;
 }
 
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 60;
+}
+
+.dialog-panel {
+  position: fixed;
+  z-index: 61;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(calc(100vw - 2rem), 24rem);
+  max-height: min(90dvh, 32rem);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: #1a1a1a;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dialog-title {
+  font-weight: 650;
+  font-size: 1rem;
+}
+
+.dialog-panel .field {
+  margin-bottom: 0;
+}
+
+.dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+}
+
+.dialog-actions .sheet-primary,
+.dialog-actions .sheet-secondary {
+  width: auto;
+  margin: 0;
+}
+
+.sidebar-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
 .sheet {
   position: fixed;
   left: 0;
@@ -1153,12 +1234,21 @@ textarea {
 
 .sidebar-brand-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
 }
 
+.sidebar-brand-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.5rem;
+  flex: 0 0 auto;
+  display: block;
+}
+
 .sidebar-brand-text {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1182,13 +1272,148 @@ textarea {
 
 .sidebar-scroll {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 7rem;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   padding: 0.45rem 0.4rem 0.75rem;
   scrollbar-width: thin;
   scrollbar-color: #2e2e2e transparent;
+}
+
+/* Live agents: independent scroll region under the workspace list. */
+.sidebar-agents {
+  flex: 0 1 auto;
+  min-height: 6rem;
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  background: #141414;
+}
+
+.sidebar-section-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem 0.35rem;
+}
+
+.sidebar-section-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* Agents sort toggle (sidebar-only): clickable Priority / Grouped switch that
+   mirrors herdr's agents-panel sort toggle (Spaces=>"grouped",
+   Priority=>"priority"). Sits above the independent scroll region so the
+   Workspaces `.sidebar-scroll` and Agents `.sidebar-agents-scroll` each keep
+   their own scroll. */
+.agent-sort-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 0.15rem;
+  margin: 0 0.65rem 0.4rem;
+  padding: 0.12rem;
+  border: 1px solid color-mix(in srgb, #fff 6%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, #fff 3%, #141414);
+  max-width: calc(100% - 1.3rem);
+}
+
+.agent-sort-btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.24rem 0.65rem;
+  font-size: 0.7rem;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.agent-sort-btn:hover {
+  color: var(--text);
+}
+
+.agent-sort-btn.active {
+  background: color-mix(in srgb, #fff 10%, #1a1a1a);
+  color: var(--text);
+}
+
+.sidebar-agents-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 0.4rem 0.6rem;
+  scrollbar-width: thin;
+  scrollbar-color: #2e2e2e transparent;
+}
+
+.live-group {
+  margin-bottom: 0.35rem;
+}
+
+.live-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.45rem 0.2rem;
+}
+
+.live-group-title {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-group-count {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: #1a1a1a;
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-agents .agent-row {
+  padding-left: 0.45rem;
+}
+
+.agent-row-ws {
+  flex: 0 0 auto;
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.sidebar-agents .empty-inline {
+  padding: 0.2rem 0.45rem;
 }
 
 .sidebar-footer {
@@ -1568,7 +1793,7 @@ textarea {
 }
 
 .topbar-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 0.88rem;
   font-weight: 600;
@@ -1577,6 +1802,37 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.topbar-title-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.topbar-add {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.topbar-add:hover,
+.topbar-add:active {
+  color: var(--text);
+  border-color: var(--border);
+  background: #1a1a1a;
 }
 
 .topbar .top-right {

@@ -33,6 +33,10 @@ type Agent struct {
 	TerminalTitle         string `json:"terminal_title"`
 	TerminalTitleStripped string `json:"terminal_title_stripped"`
 	LastOutputAt          any    `json:"last_output_at"`
+	// StateChangeSeq is the native last_agent_state_change_seq
+	// (`herdr agent list` / `herdr api snapshot`). Absent on plain
+	// shell panes (`herdr pane list`); 0 means unknown.
+	StateChangeSeq int64 `json:"state_change_seq,omitempty"`
 	// TabLabel is the herdr tab name (from `herdr tab list`); not on pane list.
 	TabLabel string `json:"tab_label,omitempty"`
 }

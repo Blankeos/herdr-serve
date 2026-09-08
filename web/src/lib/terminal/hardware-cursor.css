@@ -1,0 +1,31 @@
+/**
+ * Hardware-cursor fallback (owned terminal file).
+ * Import from App alongside `hardware-cursor.ts`:
+ *   import "./lib/terminal/hardware-cursor.css";
+ * A duplicate of this rule also lives in soft-keyboard.css (always loaded)
+ * so mobile stays fixed even before App wires this import.
+ */
+
+.term .xterm .xterm-cursor.xterm-cursor-outline {
+  background-color: #6c8ed8 !important;
+  color: #101010 !important;
+  outline: none !important;
+  opacity: 1 !important;
+}
+
+@media (pointer: coarse) {
+  .term .xterm .xterm-cursor.xterm-cursor-outline {
+    background-color: #6c8ed8 !important;
+    color: #101010 !important;
+    outline: none !important;
+    opacity: 1 !important;
+  }
+}
+
+/* Explicit host tag from markHardwareCursorHost() — same solid treatment. */
+.term.hw-cursor-visible .xterm .xterm-cursor.xterm-cursor-outline {
+  background-color: #6c8ed8 !important;
+  color: #101010 !important;
+  outline: none !important;
+  opacity: 1 !important;
+}

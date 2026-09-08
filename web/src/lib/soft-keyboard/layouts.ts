@@ -20,19 +20,38 @@ const spacer = (
  * Z-row: slight optical gap between ⇧–Z and M–⌫ (not a full half-key).
  * 1.3 + 0.2 + 7×1 + 0.2 + 1.3 = 10 — matches Q-row width.
  * Spacers alias to the action so the gap still taps.
+ *
+ * Edge-mod width is the sizing anchor across layers.
+ * Letters Z-row, numbers/symbols punct row, and bottom 123/ABC row all
+ * derive from this so ⇧ / #+= / 123 / ⌫ keep identical face widths and
+ * their icons never jump when the layer switches.
  */
+export const EDGE_MOD_FLEX = 1.3;
+/** Punct-row total must equal the Z-row total (10) to keep px-per-flex stable. */
+export const PUNCT_FLEX = 1.48; // (10 - 1.3 - 1.3) / 5
+
+/**
+ * Only apostrophe auto-returns to ABC when typed from 123/#+=.
+ * All other punctuation, digits, space, and return stay on their layer.
+ */
+export const AUTO_RETURN_PUNCT = new Set(["'"]);
+
+export function isAutoReturnPunct(value: string): boolean {
+  return AUTO_RETURN_PUNCT.has(value);
+}
+
 const SHIFT: SoftKeyDef = {
   kind: "action",
   id: "shift",
   label: "shift",
-  flex: 1.3,
+  flex: EDGE_MOD_FLEX,
   className: "sk-mod sk-shift",
 };
 const BACKSPACE: SoftKeyDef = {
   kind: "action",
   id: "backspace",
   label: "backspace",
-  flex: 1.3,
+  flex: EDGE_MOD_FLEX,
   className: "sk-mod sk-backspace",
 };
 
@@ -79,8 +98,8 @@ const NUMBERS: SoftKeyDef[][] = [
   ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((c) => letter(c)),
   ["-", "/", ":", ";", "(", ")", "$", "&", "@", '"'].map((c) => letter(c)),
   [
-    { kind: "action", id: "symbols", label: "#+=", flex: 1.5, className: "sk-mod" },
-    ...[".", ",", "?", "!", "'"].map((c) => letter(c)),
+    { kind: "action", id: "symbols", label: "#+=", flex: EDGE_MOD_FLEX, className: "sk-mod sk-symbols" },
+    ...[".", ",", "?", "!", "'"].map((c) => ({ ...letter(c), flex: PUNCT_FLEX })),
     BACKSPACE,
   ],
   bottomMain({ kind: "action", id: "letters", label: "ABC", flex: 1.2, className: "sk-mod" }),
@@ -91,8 +110,8 @@ const SYMBOLS: SoftKeyDef[][] = [
   ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="].map((c) => letter(c)),
   ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"].map((c) => letter(c)),
   [
-    { kind: "action", id: "numbers", label: "123", flex: 1.5, className: "sk-mod" },
-    ...[".", ",", "?", "!", "'"].map((c) => letter(c)),
+    { kind: "action", id: "numbers", label: "123", flex: EDGE_MOD_FLEX, className: "sk-mod sk-numbers" },
+    ...[".", ",", "?", "!", "'"].map((c) => ({ ...letter(c), flex: PUNCT_FLEX })),
     BACKSPACE,
   ],
   bottomMain({ kind: "action", id: "letters", label: "ABC", flex: 1.2, className: "sk-mod" }),

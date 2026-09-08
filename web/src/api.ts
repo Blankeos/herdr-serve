@@ -12,6 +12,8 @@ export type Agent = {
   terminal_title?: string;
   terminal_title_stripped?: string;
   last_output_at?: string | null;
+  /** Native last_agent_state_change_seq (agents only; absent on plain shells). */
+  state_change_seq?: number;
   /** Herdr tab name (e.g. "1", "2", "lg") from `herdr tab list`. */
   tab_label?: string;
 };

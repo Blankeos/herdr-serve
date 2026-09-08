@@ -237,7 +237,8 @@ export default function App() {
     typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
   );
   const [expandedIds, setExpandedIds] = createSignal<Record<string, boolean>>({});
-  const [inlineCreateId, setInlineCreateId] = createSignal("");
+  const [createAgentOpen, setCreateAgentOpen] = createSignal(false);
+  const [createAgentWsId, setCreateAgentWsId] = createSignal("");
   const [expandedSeeded, setExpandedSeeded] = createSignal(false);
 
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -599,6 +600,7 @@ export default function App() {
       a.tab_id,
       a.agent,
       a.agent_status,
+      a.state_change_seq ?? 0,
       a.focused,
       a.cwd,
       a.foreground_cwd,
@@ -853,6 +855,212 @@ export default function App() {
     return lastGroups;
   });
 
+  // ---- Live agents sort (match herdr native attention queue) ---------------
+  // Evidence (native behavior):
+  // - binary: /opt/homebrew/Cellar/herdr/0.8.2/bin/herdr
+  //   `herdr --default-config` prints:
+  //   `# Agent panel ordering: "spaces" (grouped by space) or "priority"
+  //   (attention queue).` + `# agent_panel_sort = "spaces"` (default).
+  //   `strings` on the binary shows the same comment.
+  // - source: https://github.com/herdrdev/herdr
+  //   `src/app/api_helpers.rs` `tab_attention_priority(state, seen)`:
+  //     Blocked=>4, Idle/false=>3, Working=>2, Idle/true=>1, Unknown=>0;
+  //   `pane_agent_status` / `agent_view.rs::status_name` map
+  //     (Idle,false)=>done, (Idle,true)=>idle, Working=>working,
+  //     Blocked=>blocked, Unknown=>unknown.
+  //   So resolved priority desc = blocked > done > working > idle > unknown.
+  //   `src/app/agent_view.rs` `apply_agent_view`: Priority sorts flat by
+  //   (Reverse(priority), Reverse(last_agent_state_change_seq)); Spaces
+  //   preserves workspace-iteration order (grouped by space).
+  //   `src/ui/sidebar.rs` `agent_panel_sort_label`: Spaces=>"grouped",
+  //   Priority=>"priority"; clickable `agent_panel_toggle_rect` +
+  //   `on_agent_panel_sort_toggle` (`src/app/input/sidebar.rs`,
+  //   `src/app/input/mouse.rs`) toggles sort, resets `agent_panel_scroll=0`,
+  //   persists via `save_agent_panel_sort`.
+  //   Issue #318: `blocked > idle/unseen (done) > working > idle/seen >
+  //   unknown`, stable workspace order as natural tiebreaker.
+  // - docs: https://herdr.dev/docs/config-reference/ `ui.agent_panel_sort`
+  //   enum default "spaces" ("workspaces" alias).
+  // - live: `herdr agent list` / `herdr api snapshot` already report resolved
+  //   `agent_status` strings (idle/working/blocked/done/unknown) plus
+  //   `state_change_seq` (see `web/src/api.ts` Agent +
+  //   `internal/herdr/client.go`); rank the resolved strings directly, then
+  //   descending `state_change_seq` (native Reverse(seq)), then workspace
+  //   order + label as the final stable tiebreaker (no `last_output_at`
+  //   — it jitters every poll and is excluded from `agentSig` on purpose;
+  //   `state_change_seq` IS in `agentSig` so seq bumps re-render rows).
+  // Canonical status for sorting/grouping. The live Agent model carries
+  // free-form `agent_status`; normalize here so new backend values degrade to
+  // an "other" bucket instead of vanishing from the sidebar.
+  const normLiveStatus = (s: string) => (s || "").trim().toLowerCase() || "unknown";
+
+  // Sidebar-only persisted Agents sort: "priority" (flat attention queue,
+  // faithful to herdr Priority) vs "grouped" (native Spaces: grouped by
+  // workspace in native workspace iteration order; agent order within a
+  // workspace is preserved native order).
+  // Accepts native aliases "spaces"/"workspaces" as "grouped".
+  type AgentSort = "priority" | "grouped";
+  const AGENT_SORT_KEY = "herdr-serve:agent-sort";
+  const loadAgentSort = (): AgentSort => {
+    try {
+      const raw = (localStorage.getItem(AGENT_SORT_KEY) || "").trim().toLowerCase();
+      if (raw === "priority") return "priority";
+      if (raw === "grouped" || raw === "spaces" || raw === "workspaces") return "grouped";
+    } catch {
+      /* ignore storage failures */
+    }
+    return "grouped";
+  };
+  const saveAgentSort = (v: AgentSort) => {
+    try {
+      localStorage.setItem(AGENT_SORT_KEY, v);
+    } catch {
+      /* ignore storage failures */
+    }
+  };
+  const [agentSort, setAgentSort] = createSignal<AgentSort>(loadAgentSort());
+  const setAgentSortPersist = (v: AgentSort) => {
+    if (agentSort() === v) return;
+    setAgentSort(v);
+    saveAgentSort(v);
+    // Native resets agent_panel_scroll on toggle; keep the independent
+    // `.sidebar-agents-scroll` region at top so the new order is visible.
+    try {
+      document.querySelector(".sidebar-agents-scroll")?.scrollTo({ top: 0 });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Faithful native priority: blocked > done > working > idle > unknown.
+  // `done` is Idle/unseen (needs review) — it must NOT be pushed last.
+  const liveStatusRank = (s: string) => {
+    switch (normLiveStatus(s)) {
+      case "blocked":
+        return 0;
+      case "done":
+        return 1;
+      case "working":
+        return 2;
+      case "idle":
+        return 3;
+      case "unknown":
+        return 4;
+      default:
+        return 5;
+    }
+  };
+
+  // Native `state_change_seq` for the faithful Priority tiebreak
+  // (Reverse(seq): most-recent change first). Plain shells omit it → 0.
+  const agentSeq = (a: Agent): number => {
+    const v = (a as unknown as { state_change_seq?: unknown }).state_change_seq;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)))
+      return Number(v);
+    return 0;
+  };
+
+  // Workspace order for the final stable tiebreak (native: workspace order
+  // is the natural tiebreaker once priority + seq are equal).
+  const workspaceOrder = createMemo(() => {
+    const m = new Map<string, number>();
+    workspaces().forEach((w, i) => m.set(w.workspace_id, i));
+    return m;
+  });
+
+  // Faithful native Priority: (priority, Reverse(state_change_seq)).
+  // Flat blocked > done > working > idle > unknown, seq desc within a rank.
+  const compareLiveAgents = (x: Agent, y: Agent) => {
+    const r = liveStatusRank(x.agent_status) - liveStatusRank(y.agent_status);
+    if (r !== 0) return r;
+    const sx = agentSeq(x);
+    const sy = agentSeq(y);
+    if (sx !== sy) return sy - sx;
+    const order = workspaceOrder();
+    const ox = order.get(x.workspace_id || "") ?? 1_000_000;
+    const oy = order.get(y.workspace_id || "") ?? 1_000_000;
+    if (ox !== oy) return ox - oy;
+    const lx = agentLabel(x).toLowerCase();
+    const ly = agentLabel(y).toLowerCase();
+    if (lx < ly) return -1;
+    if (lx > ly) return 1;
+    return (x.workspace_id || "").localeCompare(y.workspace_id || "");
+  };
+
+  // Native Spaces group: workspace id + display label + agents in native
+  // agent order (no priority re-sort inside the workspace).
+  type LiveGroup = { key: string; title: string; agents: Agent[] };
+
+  // Stable group references across polls (same pattern as workspaceGroups)
+  // so the independent agents scroll region doesn't rebuild each cycle.
+  let lastLiveGroups: LiveGroup[] = [];
+  const liveGroupSig = (g: LiveGroup) =>
+    JSON.stringify([g.key, g.title, g.agents.map(agentSig)]);
+
+  const liveAgentGroups = createMemo<LiveGroup[]>(() => {
+    // Native Spaces: grouped by workspace in native workspace iteration
+    // order (`workspaces()` is already native order); preserve native agent
+    // order within each workspace (filter preserves `agents()` order).
+    // Only non-empty workspaces emit a section; orphans go last.
+    const ws = workspaces();
+    const ag = agents();
+    const known = new Set(ws.map((w) => w.workspace_id));
+    const labelById = new Map(
+      ws.map((w) => [w.workspace_id, w.label || w.workspace_id] as const),
+    );
+    const groups: LiveGroup[] = [];
+    for (const w of ws) {
+      const inWs = ag.filter((a) => a.workspace_id === w.workspace_id);
+      if (!inWs.length) continue;
+      groups.push({
+        key: w.workspace_id,
+        title: labelById.get(w.workspace_id) || w.workspace_id,
+        agents: inWs,
+      });
+    }
+    const orphans = ag.filter(
+      (a) => !a.workspace_id || !known.has(a.workspace_id),
+    );
+    if (orphans.length) {
+      groups.push({ key: UNGROUPED, title: "Ungrouped", agents: orphans });
+    }
+    let identical = lastLiveGroups.length === groups.length;
+    const merged = groups.map((g, i) => {
+      const p = lastLiveGroups[i];
+      if (p && liveGroupSig(p) === liveGroupSig(g)) return p;
+      identical = false;
+      return g;
+    });
+    lastLiveGroups = identical ? lastLiveGroups : merged;
+    return lastLiveGroups;
+  });
+
+  // Flat attention queue for Priority mode — faithful to herdr native
+  // `apply_agent_view` (no status section headers, pure priority order).
+  const sortedLiveAgents = createMemo<Agent[]>(() => [...agents()].sort(compareLiveAgents));
+
+  const liveCounts = createMemo(() => {
+    const list = agents();
+    let attention = 0;
+    let running = 0;
+    for (const a of list) {
+      const s = normLiveStatus(a.agent_status);
+      if (s === "blocked") attention += 1;
+      else if (s === "working") running += 1;
+    }
+    return { total: list.length, attention, running, live: attention + running };
+  });
+
+  const workspaceNameById = createMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of workspaces()) m.set(w.workspace_id, w.label || w.workspace_id);
+    return m;
+  });
+
+  const liveAgentWorkspace = (a: Agent) =>
+    workspaceNameById().get(a.workspace_id || "") || "Ungrouped";
+
   const closeDrawer = () => {
     setDrawerOpen(false);
     setDrawerDragging(false);
@@ -880,19 +1088,31 @@ export default function App() {
     setExpandedIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const openInlineCreate = (workspaceId: string, e?: Event) => {
+  const openCreateAgent = (workspaceId?: string, e?: Event) => {
     e?.stopPropagation();
-    if (workspaceId === UNGROUPED) return;
-    setInlineCreateId(workspaceId);
-    setExpandedIds((prev) => ({ ...prev, [workspaceId]: true }));
+    const ws = workspaces();
+    const fallback =
+      focusedWorkspaceId() || ws[0]?.workspace_id || "";
+    const target = workspaceId || fallback;
+    if (!target || target === UNGROUPED) {
+      if (!ws.length) {
+        setError("Create a workspace first");
+        return;
+      }
+      if (!target) return;
+    }
+    setCreateAgentWsId(target);
+    setExpandedIds((prev) => ({ ...prev, [target]: true }));
     setCreateKind("crabcode");
     setCreateLabel("crabcode");
+    setCreateAgentOpen(true);
     setError("");
   };
 
-  const cancelInlineCreate = () => setInlineCreateId("");
+  const cancelCreateAgent = () => setCreateAgentOpen(false);
 
-  const submitCreate = async (workspaceId: string) => {
+  const submitCreateAgent = async () => {
+    const workspaceId = createAgentWsId();
     if (!workspaceId || workspaceId === UNGROUPED || creating()) return;
     setCreating(true);
     setError("");
@@ -904,7 +1124,7 @@ export default function App() {
         label: createLabel().trim() || kind,
         focus: true,
       });
-      setInlineCreateId("");
+      setCreateAgentOpen(false);
       // One coalesced refresh instead of 8× parallel list execs that hitch
       // every live stream. Optimistically select the new terminal immediately.
       if (res.terminal_id) selectAgent(res.terminal_id);
@@ -2087,7 +2307,16 @@ export default function App() {
       <Show when={authReady() && authRequired()}>
         <div class="auth-overlay" role="dialog" aria-modal="true" aria-label="Password">
           <form class="auth-panel" onSubmit={unlock}>
-            <h1 class="auth-title">Unlock herdr-serve</h1>
+            <div class="auth-brand-row">
+              <img
+                src="/icon-192.png"
+                alt="herdr-serve"
+                class="auth-brand-icon"
+                width="40"
+                height="40"
+              />
+              <h1 class="auth-title">Unlock herdr-serve</h1>
+            </div>
             <p class="auth-copy">Enter the password set when starting the server.</p>
             <div class="auth-row">
               <input
@@ -2120,6 +2349,13 @@ export default function App() {
         <aside class="sidebar" aria-label="Workspaces">
           <div class="sidebar-brand">
             <div class="sidebar-brand-row">
+              <img
+                src="/icon-192.png"
+                alt="herdr-serve"
+                class="sidebar-brand-icon"
+                width="28"
+                height="28"
+              />
               <div class="sidebar-brand-text">
                 <div class="sidebar-brand-title">herdr-serve</div>
                 <div class="sidebar-brand-sub">workspaces</div>
@@ -2129,47 +2365,11 @@ export default function App() {
                 class="workspace-add"
                 aria-label="New workspace"
                 title="New workspace"
-                onClick={() =>
-                  createWsOpen() ? cancelCreateWorkspace() : openCreateWorkspace()
-                }
+                onClick={() => openCreateWorkspace()}
               >
                 +
               </button>
             </div>
-            <Show when={createWsOpen()}>
-              <div class="inline-create inline-create-ws">
-                <input
-                  type="text"
-                  value={createWsLabel()}
-                  placeholder="Label"
-                  onInput={(e) => setCreateWsLabel(e.currentTarget.value)}
-                />
-                <input
-                  type="text"
-                  value={createWsPath()}
-                  placeholder="Path (cwd)"
-                  onInput={(e) => setCreateWsPath(e.currentTarget.value)}
-                />
-                <div class="inline-create-actions">
-                  <button
-                    type="button"
-                    class="sheet-secondary"
-                    onClick={() => cancelCreateWorkspace()}
-                    disabled={creatingWs()}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    class="sheet-primary"
-                    onClick={() => void submitCreateWorkspace()}
-                    disabled={creatingWs() || !createWsPath().trim()}
-                  >
-                    {creatingWs() ? "Creating…" : "Create"}
-                  </button>
-                </div>
-              </div>
-            </Show>
           </div>
           <div class="sidebar-scroll">
             <For each={workspaceGroups()}>
@@ -2206,7 +2406,8 @@ export default function App() {
                           type="button"
                           class="workspace-add"
                           aria-label={`New agent in ${g.label}`}
-                          onClick={(e) => openInlineCreate(g.id, e)}
+                          title={`New agent in ${g.label}`}
+                          onClick={(e) => openCreateAgent(g.id, e)}
                         >
                           +
                         </button>
@@ -2241,56 +2442,7 @@ export default function App() {
                             );
                           }}
                         </For>
-                        <Show when={inlineCreateId() === g.id}>
-                          <div class="inline-create">
-                            <div class="kind-row">
-                              <For each={[...AGENT_KINDS]}>
-                                {(k) => (
-                                  <button
-                                    type="button"
-                                    class="kind"
-                                    classList={{ active: createKind() === k.id }}
-                                    onClick={() => {
-                                      setCreateKind(k.id);
-                                      if (
-                                        !createLabel() ||
-                                        AGENT_KINDS.some((x) => x.id === createLabel())
-                                      ) {
-                                        setCreateLabel(k.id);
-                                      }
-                                    }}
-                                  >
-                                    {k.label}
-                                  </button>
-                                )}
-                              </For>
-                            </div>
-                            <input
-                              type="text"
-                              value={createLabel()}
-                              placeholder={createKind()}
-                              onInput={(e) => setCreateLabel(e.currentTarget.value)}
-                            />
-                            <div class="inline-create-actions">
-                              <button
-                                type="button"
-                                class="sheet-secondary"
-                                onClick={() => cancelInlineCreate()}
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                type="button"
-                                class="sheet-primary"
-                                disabled={creating()}
-                                onClick={() => void submitCreate(g.id)}
-                              >
-                                {creating() ? "Creating…" : "Create"}
-                              </button>
-                            </div>
-                          </div>
-                        </Show>
-                        <Show when={!g.agents.length && inlineCreateId() !== g.id}>
+                        <Show when={!g.agents.length}>
                           <div class="empty-inline">No agents</div>
                         </Show>
                       </div>
@@ -2302,6 +2454,144 @@ export default function App() {
             <Show when={!workspaceGroups().length}>
               <div class="empty-inline">No workspaces yet.</div>
             </Show>
+          </div>
+          <div class="sidebar-agents" aria-label="Live agents">
+            <div class="sidebar-section-head">
+              <span class="sidebar-section-title">Agents</span>
+              <div class="sidebar-section-actions">
+                <Show
+                  when={liveCounts().total > 0}
+                  fallback={<span class="workspace-count">0</span>}
+                >
+                  <span
+                    class="workspace-count"
+                    title={`${liveCounts().live} live / ${liveCounts().total} total`}
+                  >
+                    {liveCounts().live}/{liveCounts().total} live
+                  </span>
+                </Show>
+                <button
+                  type="button"
+                  class="workspace-add"
+                  aria-label="New agent"
+                  title="New agent"
+                  onClick={(e) => openCreateAgent(undefined, e)}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            {/* Native herdr Agents header carries a clickable sort toggle
+                (Spaces=>"grouped", Priority=>"priority"). Mirror it here so the
+                phone sidebar matches: Priority = flat attention queue,
+                Grouped = workspaces in native order (like herdr spaces). */}
+            <div class="agent-sort-toggle" role="tablist" aria-label="Agent sort">
+              <button
+                type="button"
+                role="tab"
+                class="agent-sort-btn"
+                classList={{ active: agentSort() === "priority" }}
+                aria-selected={agentSort() === "priority"}
+                title="Attention queue: blocked, done, working, idle, unknown (flat, like herdr priority)"
+                onClick={() => setAgentSortPersist("priority")}
+              >
+                Priority
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="agent-sort-btn"
+                classList={{ active: agentSort() === "grouped" }}
+                aria-selected={agentSort() === "grouped"}
+                title="Grouped by workspace in native order (like herdr spaces)"
+                onClick={() => setAgentSortPersist("grouped")}
+              >
+                Grouped
+              </button>
+            </div>
+            {/* Independent scroll region (unchanged): only this div scrolls,
+                the Workspaces `.sidebar-scroll` above stays independent.
+                Grouped = native Spaces (workspace sections in native order,
+                native agent order within each workspace); Priority = flat
+                attention queue below. */}
+            <div class="sidebar-agents-scroll">
+              <Show
+                when={agentSort() === "priority"}
+                fallback={
+                  <For each={liveAgentGroups()}>
+                    {(g) => (
+                      <div class="live-group">
+                        <div class="live-group-head">
+                          <span class="live-group-title">{g.title}</span>
+                          <span class="live-group-count">{g.agents.length}</span>
+                        </div>
+                        <For each={g.agents}>
+                          {(a) => {
+                            const id = agentId(a);
+                            const menu = contextMenuBind(() => agentMenu(a));
+                            return (
+                              <button
+                                type="button"
+                                class="agent-row"
+                                classList={{ active: id === selected() }}
+                                title={`${agentLabel(a)} · ${a.agent_status}`}
+                                onClick={() => selectAgent(id)}
+                                onContextMenu={menu.onContextMenu}
+                                onTouchStart={menu.onTouchStart}
+                                onTouchMove={menu.onTouchMove}
+                                onTouchEnd={menu.onTouchEnd}
+                                onTouchCancel={menu.onTouchCancel}
+                              >
+                                <span class="dot-wrap">
+                                  <span class="dot" data-status={a.agent_status} />
+                                  <Show when={a.agent_status === "working"}>
+                                    <span class="dot-ping" />
+                                  </Show>
+                                </span>
+                                <span class="agent-row-name">{agentLabel(a)}</span>
+                              </button>
+                            );
+                          }}
+                        </For>
+                      </div>
+                    )}
+                  </For>
+                }
+              >
+                <For each={sortedLiveAgents()}>
+                  {(a) => {
+                    const id = agentId(a);
+                    const menu = contextMenuBind(() => agentMenu(a));
+                    return (
+                      <button
+                        type="button"
+                        class="agent-row"
+                        classList={{ active: id === selected() }}
+                        title={`${agentLabel(a)} · ${liveAgentWorkspace(a)} · ${a.agent_status}`}
+                        onClick={() => selectAgent(id)}
+                        onContextMenu={menu.onContextMenu}
+                        onTouchStart={menu.onTouchStart}
+                        onTouchMove={menu.onTouchMove}
+                        onTouchEnd={menu.onTouchEnd}
+                        onTouchCancel={menu.onTouchCancel}
+                      >
+                        <span class="dot-wrap">
+                          <span class="dot" data-status={a.agent_status} />
+                          <Show when={a.agent_status === "working"}>
+                            <span class="dot-ping" />
+                          </Show>
+                        </span>
+                        <span class="agent-row-name">{agentLabel(a)}</span>
+                        <span class="agent-row-ws">{liveAgentWorkspace(a)}</span>
+                      </button>
+                    );
+                  }}
+                </For>
+              </Show>
+              <Show when={!agents().length}>
+                <div class="empty-inline">No live agents</div>
+              </Show>
+            </div>
           </div>
           <div class="sidebar-footer">
             <button type="button" class="sidebar-settings-btn" onClick={() => openSettings()}>
@@ -2344,7 +2634,18 @@ export default function App() {
             >
               ☰
             </button>
-            <div class="topbar-title">Agents</div>
+            <div class="topbar-title-row">
+              <div class="topbar-title">Agents</div>
+              <button
+                type="button"
+                class="topbar-add"
+                aria-label="New agent"
+                title="New agent"
+                onClick={(e) => openCreateAgent(undefined, e)}
+              >
+                +
+              </button>
+            </div>
             <div class="top-right">
               <span class="conn" data-conn={conn()}>
                 {conn()}
@@ -2471,6 +2772,153 @@ export default function App() {
           />
         </div>
       </div>
+
+      <Show when={createWsOpen()}>
+        <div class="dialog-overlay" onClick={() => cancelCreateWorkspace()} />
+        <form
+          class="dialog-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="New workspace"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitCreateWorkspace();
+          }}
+        >
+          <div class="dialog-head">
+            <div class="dialog-title">New workspace</div>
+            <button
+              type="button"
+              class="sheet-close"
+              onClick={() => cancelCreateWorkspace()}
+            >
+              Close
+            </button>
+          </div>
+          <label class="field">
+            <span>Label</span>
+            <input
+              type="text"
+              value={createWsLabel()}
+              placeholder="my-project"
+              onInput={(e) => setCreateWsLabel(e.currentTarget.value)}
+            />
+          </label>
+          <label class="field">
+            <span>Path (cwd)</span>
+            <input
+              type="text"
+              value={createWsPath()}
+              placeholder="/path/to/project"
+              onInput={(e) => setCreateWsPath(e.currentTarget.value)}
+            />
+          </label>
+          <div class="dialog-actions">
+            <button
+              type="button"
+              class="sheet-secondary"
+              onClick={() => cancelCreateWorkspace()}
+              disabled={creatingWs()}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="sheet-primary"
+              disabled={creatingWs() || !createWsPath().trim()}
+            >
+              {creatingWs() ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </form>
+      </Show>
+
+      <Show when={createAgentOpen()}>
+        <div class="dialog-overlay" onClick={() => cancelCreateAgent()} />
+        <form
+          class="dialog-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="New agent"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitCreateAgent();
+          }}
+        >
+          <div class="dialog-head">
+            <div class="dialog-title">New agent</div>
+            <button
+              type="button"
+              class="sheet-close"
+              onClick={() => cancelCreateAgent()}
+            >
+              Close
+            </button>
+          </div>
+          <label class="field">
+            <span>Workspace</span>
+            <select
+              value={createAgentWsId()}
+              onChange={(e) => setCreateAgentWsId(e.currentTarget.value)}
+            >
+              <For each={workspaces()}>
+                {(w) => (
+                  <option value={w.workspace_id}>
+                    {w.label || w.workspace_id}
+                  </option>
+                )}
+              </For>
+            </select>
+          </label>
+          <div class="field">
+            <span>Agent</span>
+            <div class="kind-row">
+              <For each={[...AGENT_KINDS]}>
+                {(k) => (
+                  <button
+                    type="button"
+                    class="kind"
+                    classList={{ active: createKind() === k.id }}
+                    onClick={() => {
+                      setCreateKind(k.id);
+                      if (
+                        !createLabel() ||
+                        AGENT_KINDS.some((x) => x.id === createLabel())
+                      ) {
+                        setCreateLabel(k.id);
+                      }
+                    }}
+                  >
+                    {k.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+          <label class="field">
+            <span>Label</span>
+            <input
+              type="text"
+              value={createLabel()}
+              placeholder={createKind()}
+              onInput={(e) => setCreateLabel(e.currentTarget.value)}
+            />
+          </label>
+          <div class="dialog-actions">
+            <button
+              type="button"
+              class="sheet-secondary"
+              onClick={() => cancelCreateAgent()}
+              disabled={creating()}
+            >
+              Cancel
+            </button>
+            <button type="submit" class="sheet-primary" disabled={creating()}>
+              {creating() ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </form>
+      </Show>
 
       <Show when={settingsOpen()}>
         <div class="sheet-backdrop" onClick={() => closeSettings()} />
