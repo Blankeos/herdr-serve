@@ -98,27 +98,10 @@ export function createDomSoftKeyboard(
   let destroyed = false;
 
   const active = new Map<number, ActivePress>();
-  /**
-   * Cross-event dedupe (pointer ↔ touch ↔ click).
-   * iOS sometimes delivers only one of touchstart / pointerdown / click for a
-   * sequential tap — we accept whichever arrives first and ignore duplicates.
-   */
-  let lastBeginX = 0;
-  let lastBeginY = 0;
-  let lastBeginAt = 0;
-  let lastCommitKey: SoftKeyDef | null = null;
-  let lastCommitAt = 0;
-  let lastCommitX = 0;
-  let lastCommitY = 0;
-  let lastTouchEndX = 0;
-  let lastTouchEndY = 0;
-  let lastTouchEndAt = 0;
+  // Never mix pointer and touch ID spaces or dedupe by time/distance.
+  const usePointerEvents = typeof window.PointerEvent === "function";
   let hitCache: KeyHit[] = [];
   let hitCacheAt = 0;
-  let nextSyntheticId = -1;
-  /** Ignore key hits until this timestamp (ms). Arms on every open. */
-  let inputQuietUntil = 0;
-  let openGateCleanup: (() => void) | null = null;
 
   const root = document.createElement("div");
   root.className = `soft-keyboard${opts.className ? ` ${opts.className}` : ""}`;
@@ -428,24 +411,9 @@ export function createDomSoftKeyboard(
     return keyAt(row, col);
   };
 
-  /** True if another event stream already began a press at roughly this point. */
-  const recentlyBeganNear = (x: number, y: number): boolean => {
-    const dt = performance.now() - lastBeginAt;
-    // iOS pointer/touch twins can arrive 40–80ms apart on fast taps.
-    if (dt < 0 || dt > 90) return false;
-    const dx = x - lastBeginX;
-    const dy = y - lastBeginY;
-    return dx * dx + dy * dy < 36 * 36;
-  };
-
-  /** Start tracking a finger — highlight only (except backspace). */
-  const beginPress = (id: number, el: HTMLElement, x: number, y: number) => {
+  /** Track each contact independently, including overlapping adjacent taps. */
+  const beginPress = (id: number, el: HTMLElement) => {
     if (active.has(id)) return;
-    // Same physical tap arriving via a second event type (touch + pointer).
-    if (recentlyBeganNear(x, y)) return;
-    // Already tracking this tap under a different id — don't start a twin.
-    if (findActiveNear(x, y) !== null) return;
-
     const key = resolveKey(el);
     if (!key) return;
 
@@ -460,18 +428,8 @@ export function createDomSoftKeyboard(
       lastGoodKey: key,
       lastGoodEl: el,
     });
-    lastBeginX = x;
-    lastBeginY = y;
-    lastBeginAt = performance.now();
-
     if (backspace) {
       handlers.onBackspace();
-      // Stamp as committed NOW — backspace fires on press, not release.
-      // Without this, touchend recovery thinks the tap was missed → double ⌫.
-      lastCommitKey = key;
-      lastCommitAt = performance.now();
-      lastCommitX = x;
-      lastCommitY = y;
       if (active.size === 1) armBackspaceRepeat();
     }
   };
@@ -527,57 +485,11 @@ export function createDomSoftKeyboard(
       // Slid onto backspace — fire once + arm repeat (Apple-ish).
       handlers.onBackspace();
       press.backspaceArmed = true;
-      lastCommitKey = key;
-      lastCommitAt = performance.now();
-      lastCommitX = x;
-      lastCommitY = y;
       if (active.size === 1) armBackspaceRepeat();
     }
   };
 
-  /** Same physical tap already committed nearby (pointer+touch double fire). */
-  const recentlyCommittedNear = (x: number, y: number, windowMs = 120): boolean => {
-    const dt = performance.now() - lastCommitAt;
-    if (dt < 0 || dt > windowMs) return false;
-    const dx = x - lastCommitX;
-    const dy = y - lastCommitY;
-    return dx * dx + dy * dy < 36 * 36;
-  };
-
-  const inputBlocked = (): boolean => performance.now() < inputQuietUntil;
-
-  /** After open, ignore the gesture that revealed us + a short quiet window. */
-  const armOpenGate = () => {
-    openGateCleanup?.();
-    openGateCleanup = null;
-    // Cover long-press (finger still down) and synthetic click after touchend.
-    inputQuietUntil = performance.now() + 450;
-
-    const bumpQuiet = () => {
-      inputQuietUntil = Math.max(inputQuietUntil, performance.now() + 280);
-    };
-    const onUp = () => bumpQuiet();
-    const opts: AddEventListenerOptions = { capture: true, passive: true };
-    window.addEventListener("pointerup", onUp, opts);
-    window.addEventListener("pointercancel", onUp, opts);
-    window.addEventListener("touchend", onUp, opts);
-    window.addEventListener("touchcancel", onUp, opts);
-    window.addEventListener("mouseup", onUp, opts);
-    const timer = window.setTimeout(() => {
-      openGateCleanup?.();
-      openGateCleanup = null;
-    }, 900);
-    openGateCleanup = () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onUp, true);
-      window.removeEventListener("touchend", onUp, true);
-      window.removeEventListener("touchcancel", onUp, true);
-      window.removeEventListener("mouseup", onUp, true);
-    };
-  };
-
-  const endPress = (id: number, commit: boolean, x?: number, y?: number) => {
+  const endPress = (id: number, commit: boolean) => {
     const press = active.get(id);
     if (!press) return;
     active.delete(id);
@@ -585,18 +497,7 @@ export function createDomSoftKeyboard(
     clearVisual(press);
 
     if (commit && !press.cancelled) {
-      const key = press.lastGoodKey ?? press.key;
-      const cx = x ?? lastBeginX;
-      const cy = y ?? lastBeginY;
-      // Position-based dedupe — NOT key identity. After ⇧, the same physical
-      // tap can resolve as C then c once shift unlatches; key-id dedupe fails.
-      if (!recentlyCommittedNear(cx, cy)) {
-        commitKey(key);
-        lastCommitKey = key;
-        lastCommitAt = performance.now();
-        lastCommitX = cx;
-        lastCommitY = cy;
-      }
+      commitKey(press.lastGoodKey);
     }
 
     if (active.size === 0) {
@@ -614,167 +515,86 @@ export function createDomSoftKeyboard(
     }
   };
 
-  /** Ghost click from previous touchend — same spot, shortly after. */
-  const isGhostFromPrevKey = (x: number, y: number): boolean => {
-    const dt = performance.now() - lastTouchEndAt;
-    if (dt < 0 || dt > 350) return false;
-    const dx = x - lastTouchEndX;
-    const dy = y - lastTouchEndY;
-    return dx * dx + dy * dy < 22 * 22;
-  };
-
-  /**
-   * Find an active press near (x,y) — used so pointerup can end a press that
-   * began as touchstart (different id spaces) and vice versa.
-   */
-  const findActiveNear = (x: number, y: number): number | null => {
-    let bestId: number | null = null;
-    let best = Infinity;
-    for (const [id, press] of active) {
-      const r = press.el.getBoundingClientRect();
-      const cx = (r.left + r.right) * 0.5;
-      const cy = (r.top + r.bottom) * 0.5;
-      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-      if (d < best) {
-        best = d;
-        bestId = id;
-      }
-    }
-    return best < 60 * 60 ? bestId : null;
-  };
-
   const onTouchStart = (ev: TouchEvent) => {
-    // No preventDefault on touchstart — sequential tap reliability.
-    // touch-action:none on keys blocks scroll. Still PD on move.
-    if (inputBlocked()) return;
-    if (!hitCache.length) rebuildHitCache();
-
-    for (let i = 0; i < ev.changedTouches.length; i++) {
-      const t = ev.changedTouches[i]!;
-      // Already handled by pointerdown for this physical tap.
-      if (recentlyBeganNear(t.clientX, t.clientY)) continue;
-      if (recentlyCommittedNear(t.clientX, t.clientY)) continue;
+    if (!open) return;
+    if (ev.cancelable) ev.preventDefault();
+    for (const t of Array.from(ev.changedTouches)) {
       const el = hitKeyEl(t.clientX, t.clientY);
-      if (el) beginPress(t.identifier, el, t.clientX, t.clientY);
+      if (el) beginPress(t.identifier, el);
     }
   };
 
   const onTouchMove = (ev: TouchEvent) => {
     if (ev.cancelable) ev.preventDefault();
-    for (let i = 0; i < ev.changedTouches.length; i++) {
-      const t = ev.changedTouches[i]!;
-      const id = active.has(t.identifier)
-        ? t.identifier
-        : findActiveNear(t.clientX, t.clientY);
-      if (id !== null) movePress(id, t.clientX, t.clientY);
+    for (const t of Array.from(ev.changedTouches)) {
+      movePress(t.identifier, t.clientX, t.clientY);
     }
   };
 
   const onTouchEnd = (ev: TouchEvent) => {
-    // No preventDefault — sequential tap reliability.
-    for (let i = 0; i < ev.changedTouches.length; i++) {
-      const t = ev.changedTouches[i]!;
-      lastTouchEndX = t.clientX;
-      lastTouchEndY = t.clientY;
-      lastTouchEndAt = performance.now();
-
-      const id: number | null = active.has(t.identifier)
-        ? t.identifier
-        : findActiveNear(t.clientX, t.clientY);
-
-      if (id === null) {
-        // Recovery ONLY if nothing already committed this physical tap.
-        // Dual pointer+touch was producing Cc / double-⌫ via this path.
-        if (recentlyCommittedNear(t.clientX, t.clientY)) continue;
-        if (recentlyBeganNear(t.clientX, t.clientY)) continue;
-        const el = hitKeyEl(t.clientX, t.clientY);
-        if (el) {
-          beginPress(t.identifier, el, t.clientX, t.clientY);
-          endPress(t.identifier, true, t.clientX, t.clientY);
-        }
-        continue;
+    if (ev.cancelable) ev.preventDefault();
+    for (const t of Array.from(ev.changedTouches)) {
+      if (ev.type === "touchend") {
+        movePress(t.identifier, t.clientX, t.clientY, { allowCancel: false });
       }
-      movePress(id, t.clientX, t.clientY, { allowCancel: false });
-      endPress(id, true, t.clientX, t.clientY);
+      endPress(t.identifier, ev.type === "touchend");
     }
   };
 
   const onPointerDown = (ev: PointerEvent) => {
-    // Accept all pointerTypes; beginPress / recentlyBeganNear dedupe vs touch.
-    if (inputBlocked()) {
-      if (ev.cancelable) ev.preventDefault();
-      return;
-    }
-    if (isGhostFromPrevKey(ev.clientX, ev.clientY) && active.size === 0) {
-      if (ev.cancelable) ev.preventDefault();
-      return;
-    }
-    if (recentlyCommittedNear(ev.clientX, ev.clientY)) {
-      if (ev.cancelable) ev.preventDefault();
-      return;
-    }
-    if (!hitCache.length) rebuildHitCache();
+    if (!open || ev.button !== 0) return;
+    // Avoid focusing buttons/xterm and opening the native keyboard.
+    if (ev.cancelable) ev.preventDefault();
     const el = hitKeyEl(ev.clientX, ev.clientY);
-    if (el) beginPress(ev.pointerId, el, ev.clientX, ev.clientY);
+    if (!el) return;
+    // Capture on the stable root, not keys replaced during layer changes.
+    root.setPointerCapture(ev.pointerId);
+    beginPress(ev.pointerId, el);
   };
 
   const onPointerMove = (ev: PointerEvent) => {
-    const id = active.has(ev.pointerId)
-      ? ev.pointerId
-      : findActiveNear(ev.clientX, ev.clientY);
-    if (id === null) return;
+    if (!active.has(ev.pointerId)) return;
     if (ev.cancelable) ev.preventDefault();
-    movePress(id, ev.clientX, ev.clientY);
+    movePress(ev.pointerId, ev.clientX, ev.clientY);
   };
 
   const onPointerEnd = (ev: PointerEvent) => {
-    const id = active.has(ev.pointerId)
-      ? ev.pointerId
-      : findActiveNear(ev.clientX, ev.clientY);
-    if (id === null) return;
-    movePress(id, ev.clientX, ev.clientY, { allowCancel: false });
-    endPress(id, true, ev.clientX, ev.clientY);
+    if (!active.has(ev.pointerId)) return;
+    const commit = ev.type === "pointerup";
+    if (commit) {
+      movePress(ev.pointerId, ev.clientX, ev.clientY, { allowCancel: false });
+    }
+    endPress(ev.pointerId, commit);
+    if (root.hasPointerCapture(ev.pointerId)) root.releasePointerCapture(ev.pointerId);
   };
 
-  /**
-   * Last-resort: iOS sometimes delivers only a click for a sequential tap
-   * when touchstart was dropped.
-   */
   const onClick = (ev: MouseEvent) => {
-    if (inputBlocked()) {
-      ev.preventDefault();
-      return;
-    }
-    if (isGhostFromPrevKey(ev.clientX, ev.clientY)) {
-      ev.preventDefault();
-      return;
-    }
-    if (findActiveNear(ev.clientX, ev.clientY) !== null) return;
-    if (recentlyBeganNear(ev.clientX, ev.clientY)) return;
-    if (recentlyCommittedNear(ev.clientX, ev.clientY, 200)) {
-      ev.preventDefault();
-      return;
-    }
-
-    if (!hitCache.length) rebuildHitCache();
-    const el = hitKeyEl(ev.clientX, ev.clientY);
-    if (!el) return;
-    const id = nextSyntheticId--;
-    beginPress(id, el, ev.clientX, ev.clientY);
-    endPress(id, true, ev.clientX, ev.clientY);
     ev.preventDefault();
+    // Physical clicks are already handled above. Keep keyboard/AT activation,
+    // which has detail=0 and targets a button rather than screen coordinates.
+    if (!open || ev.detail !== 0) return;
+    const el = (ev.target as Element).closest<HTMLElement>("button[data-sk-row]");
+    if (!el || !root.contains(el)) return;
+    const key = resolveKey(el);
+    if (!key) return;
+    if (isBackspaceKey(key)) handlers.onBackspace();
+    else commitKey(key);
   };
 
   const touchOpts: AddEventListenerOptions = { passive: false, capture: true };
-  root.addEventListener("touchstart", onTouchStart, touchOpts);
-  root.addEventListener("touchmove", onTouchMove, touchOpts);
-  root.addEventListener("touchend", onTouchEnd, touchOpts);
-  root.addEventListener("touchcancel", onTouchEnd, touchOpts);
-  root.addEventListener("pointerdown", onPointerDown, { capture: true });
-  root.addEventListener("pointermove", onPointerMove, { capture: true });
-  root.addEventListener("pointerup", onPointerEnd, { capture: true });
-  root.addEventListener("pointercancel", onPointerEnd, { capture: true });
-  root.addEventListener("click", onClick, { capture: true });
+  if (usePointerEvents) {
+    root.addEventListener("pointerdown", onPointerDown, true);
+    root.addEventListener("pointermove", onPointerMove, true);
+    root.addEventListener("pointerup", onPointerEnd, true);
+    root.addEventListener("pointercancel", onPointerEnd, true);
+    root.addEventListener("lostpointercapture", onPointerEnd, true);
+  } else {
+    root.addEventListener("touchstart", onTouchStart, touchOpts);
+    root.addEventListener("touchmove", onTouchMove, touchOpts);
+    root.addEventListener("touchend", onTouchEnd, touchOpts);
+    root.addEventListener("touchcancel", onTouchEnd, touchOpts);
+  }
+  root.addEventListener("click", onClick, true);
 
   const onViewport = () => scheduleHitCache();
   window.addEventListener("resize", onViewport);
@@ -901,9 +721,6 @@ export function createDomSoftKeyboard(
         for (const id of [...active.keys()]) endPress(id, false);
         clearRepeat();
         hitCache = [];
-        openGateCleanup?.();
-        openGateCleanup = null;
-        inputQuietUntil = 0;
         // Native dismiss clears one-shot shift only; caps (latched) survives.
         if (layout === "shifted" && !shiftLatched) {
           layout = "letters";
@@ -923,7 +740,6 @@ export function createDomSoftKeyboard(
           if (active.size === 0) render();
           else renderPending = true;
         }
-        armOpenGate();
         if (!renderPending) scheduleHitCache();
       }
     },
@@ -941,8 +757,6 @@ export function createDomSoftKeyboard(
       destroyed = true;
       if (renderRaf) cancelAnimationFrame(renderRaf);
       if (hitCacheRaf) cancelAnimationFrame(hitCacheRaf);
-      openGateCleanup?.();
-      openGateCleanup = null;
       for (const id of [...active.keys()]) endPress(id, false);
       clearRepeat();
       root.removeEventListener("touchstart", onTouchStart, true);
@@ -953,6 +767,7 @@ export function createDomSoftKeyboard(
       root.removeEventListener("pointermove", onPointerMove, true);
       root.removeEventListener("pointerup", onPointerEnd, true);
       root.removeEventListener("pointercancel", onPointerEnd, true);
+      root.removeEventListener("lostpointercapture", onPointerEnd, true);
       root.removeEventListener("click", onClick, true);
       window.removeEventListener("resize", onViewport);
       window.removeEventListener("orientationchange", onViewport);
