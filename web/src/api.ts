@@ -211,3 +211,17 @@ export async function sendKeys(id: string, keys: string[]) {
     body: JSON.stringify({ keys }),
   });
 }
+
+export async function closeTab(tabId: string) {
+  return json(`/api/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
+}
+
+export async function closeWorkspace(workspaceId: string) {
+  return json(`/api/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function closePane(paneId: string) {
+  return json(`/api/panes/${encodeURIComponent(paneId)}`, { method: "DELETE" });
+}

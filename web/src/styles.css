@@ -659,12 +659,44 @@ textarea {
   bottom: 0;
   z-index: 50;
   max-height: min(88dvh, 36rem);
-  overflow: auto;
-  padding: 0.9rem 0.9rem calc(0.9rem + var(--safe-bottom));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0.9rem 0.9rem 0;
   border-top: 1px solid var(--border);
   border-radius: 0.85rem 0.85rem 0 0;
   background: #1a1a1a;
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.5rem;
+}
+
+.settings-footer {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding: 0.65rem 0 calc(0.75rem + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+  background: #1a1a1a;
+}
+
+.settings-footer .sheet-primary,
+.settings-footer .sheet-secondary {
+  width: auto;
+  margin: 0;
+}
+
+.settings-reset {
+  width: 100%;
+  margin-top: 0.35rem;
 }
 
 .sheet-head {
@@ -672,7 +704,8 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.85rem;
+  margin-bottom: 0.55rem;
+  flex: 0 0 auto;
 }
 
 .sheet-title {
@@ -757,24 +790,27 @@ textarea {
 }
 
 .sheet-tabs {
-  display: flex;
-  gap: 0.3rem;
-  padding: 0.25rem;
-  border: 1px solid var(--border);
-  border-radius: 0.55rem;
-  background: #101010;
-  margin-bottom: 0.85rem;
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.12rem;
+  border: 1px solid color-mix(in srgb, #fff 6%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, #fff 3%, #141414);
+  margin: 0 0 0.65rem;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .sheet-tab {
-  flex: 1 1 0;
-  border: 1px solid transparent;
-  border-radius: 0.4rem;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  padding: 0.5rem 0.6rem;
-  font-size: 0.83rem;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.72rem;
   font-weight: 550;
+  letter-spacing: 0.01em;
   cursor: pointer;
   transition:
     color 0.14s ease,
@@ -786,8 +822,7 @@ textarea {
 }
 
 .sheet-tab.active {
-  background: color-mix(in srgb, #fff 7%, #101010);
-  border-color: var(--border);
+  background: color-mix(in srgb, #fff 10%, #1a1a1a);
   color: var(--text);
 }
 
@@ -834,10 +869,11 @@ textarea {
 }
 
 .shortcut-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  justify-content: flex-start;
+  gap: 0.45rem;
   padding: 0.5rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 0.4rem;
@@ -848,13 +884,64 @@ textarea {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
+.shortcut-row.dragging {
+  opacity: 0.45;
+  z-index: 2;
+}
+
+.shortcut-row.drop-before::before,
+.shortcut-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0.35rem;
+  right: 0.35rem;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.shortcut-row.drop-before::before {
+  top: -4px;
+}
+
+.shortcut-row.drop-after::after {
+  bottom: -4px;
+}
+
+.shortcut-handle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  min-width: 1.6rem;
+  min-height: 1.6rem;
+  margin: -0.15rem 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.2rem;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
+  cursor: grab;
+}
+
+.shortcut-handle:active {
+  cursor: grabbing;
+  color: var(--text);
+}
+
 .shortcut-main {
+  flex: 1 1 auto;
   min-width: 0;
+  text-align: left;
 }
 
 .shortcut-label {
   font-weight: 650;
   font-size: 0.86rem;
+  text-align: left;
 }
 
 .shortcut-chords {
@@ -864,6 +951,7 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
 
 .shortcut-actions {
@@ -871,6 +959,8 @@ textarea {
   flex-wrap: wrap;
   gap: 0.25rem;
   justify-content: flex-end;
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .mini {
@@ -1116,12 +1206,12 @@ textarea {
   align-items: center;
   gap: 0.55rem;
   width: 100%;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 0.45rem;
-  background: #121212;
-  color: var(--text);
-  font-size: 0.85rem;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
   font-weight: 500;
   cursor: pointer;
   text-align: left;
@@ -1129,8 +1219,8 @@ textarea {
 
 .sidebar-settings-btn:hover,
 .sidebar-settings-btn:active {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  background: color-mix(in srgb, #fff 4%, #121212);
+  color: var(--text);
+  background: color-mix(in srgb, #fff 5%, transparent);
 }
 
 .sidebar-settings-icon {
@@ -1529,6 +1619,11 @@ textarea {
   animation: terminals-chips-in 0.18s ease;
 }
 
+/* Desktop-only chips under Agents topbar (mobile uses .right-panel). */
+.terminals-chips-desktop {
+  display: none;
+}
+
 .terminals-chips-scroll {
   display: flex;
   gap: 0.35rem;
@@ -1761,4 +1856,61 @@ textarea {
   .sidebar-footer {
     padding-bottom: 0.55rem;
   }
+
+  /* Desktop: show chips under Agents topbar when Terminals is toggled. */
+  .terminals-chips-desktop {
+    display: block;
+  }
+}
+
+
+/* Context menu */
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: transparent;
+}
+
+.ctx-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 10.5rem;
+  padding: 0.28rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: #1c1c1c;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  display: grid;
+  gap: 0.1rem;
+}
+
+.ctx-item {
+  border: 0;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0.48rem 0.6rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.ctx-item:hover,
+.ctx-item:active {
+  background: color-mix(in srgb, #fff 7%, transparent);
+}
+
+.ctx-item.danger {
+  color: #f0a0a0;
+}
+
+.ctx-item.danger:hover,
+.ctx-item.danger:active {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+}
+
+.ctx-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

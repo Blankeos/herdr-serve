@@ -227,6 +227,33 @@ func (c *Client) FocusTab(tabID string) error {
 	return err
 }
 
+// CloseTab closes a tab by id.
+func (c *Client) CloseTab(tabID string) error {
+	if strings.TrimSpace(tabID) == "" {
+		return fmt.Errorf("tab id required")
+	}
+	_, err := c.run("tab", "close", tabID)
+	return err
+}
+
+// CloseWorkspace closes a workspace by id.
+func (c *Client) CloseWorkspace(workspaceID string) error {
+	if strings.TrimSpace(workspaceID) == "" {
+		return fmt.Errorf("workspace id required")
+	}
+	_, err := c.run("workspace", "close", workspaceID)
+	return err
+}
+
+// ClosePane closes a pane by id.
+func (c *Client) ClosePane(paneID string) error {
+	if strings.TrimSpace(paneID) == "" {
+		return fmt.Errorf("pane id required")
+	}
+	_, err := c.run("pane", "close", paneID)
+	return err
+}
+
 // ListTabs returns every tab (includes user-assigned labels like "1","2","lg").
 func (c *Client) ListTabs() ([]Tab, error) {
 	res, err := c.runJSON("tab", "list")

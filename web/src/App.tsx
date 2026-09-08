@@ -17,6 +17,9 @@ import {
   authLogin,
   authStatus,
   clearToken,
+  closePane,
+  closeTab,
+  closeWorkspace,
   createAgent,
   createTab,
   createWorkspace,
@@ -52,6 +55,13 @@ import {
   createDictation,
   speechSupported,
 } from "./lib/soft-keyboard";
+import { arrayMoveImmutable } from "./lib/drag-and-drop";
+import { SortableList } from "./lib/sortable-list";
+import {
+  ContextMenuHost,
+  contextMenuBind,
+  type ContextMenuItem,
+} from "./lib/context-menu";
 
 const SIDEBAR_W = 272;
 const UNGROUPED = "ungrouped";
@@ -250,6 +260,7 @@ export default function App() {
   const [importText, setImportText] = createSignal("");
   const [settingsMsg, setSettingsMsg] = createSignal("");
   const [exportText, setExportText] = createSignal("");
+  const [deleteBusy, setDeleteBusy] = createSignal(false);
   const [softKbOpen, setSoftKbOpen] = createSignal(false);
   const [micActive, setMicActive] = createSignal(false);
   const [authRequired, setAuthRequired] = createSignal(false);
@@ -1174,6 +1185,107 @@ export default function App() {
     });
   };
 
+  const reorderDraft = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    setDraftShortcuts((prev) => arrayMoveImmutable(prev, from, to));
+  };
+
+  const refreshAfterDelete = async () => {
+    try {
+      const [a, w, p] = await Promise.all([
+        listAgents(),
+        listWorkspaces(),
+        listPanes(),
+      ]);
+      setAgents(a);
+      setWorkspaces(w);
+      setPanes(p);
+    } catch {
+      /* keep last-good */
+    }
+  };
+
+  const deleteAgent = async (a: Agent) => {
+    if (deleteBusy()) return;
+    const tab = (a.tab_id || "").trim();
+    if (!tab) {
+      setError("Agent has no tab id to close");
+      return;
+    }
+    setDeleteBusy(true);
+    setError("");
+    try {
+      await closeTab(tab);
+      const id = agentId(a);
+      if (selected() === id) setSelected("");
+      await refreshAfterDelete();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete agent");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const deleteWorkspace = async (wsId: string) => {
+    if (deleteBusy() || !wsId || wsId === UNGROUPED) return;
+    setDeleteBusy(true);
+    setError("");
+    try {
+      await closeWorkspace(wsId);
+      await refreshAfterDelete();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete space");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const deleteShell = async (p: Agent) => {
+    if (deleteBusy()) return;
+    const pane = (p.pane_id || "").trim();
+    if (!pane) {
+      setError("Terminal has no pane id to close");
+      return;
+    }
+    setDeleteBusy(true);
+    setError("");
+    try {
+      await closePane(pane);
+      const id = agentId(p);
+      if (selected() === id) setSelected("");
+      await refreshAfterDelete();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete terminal");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const agentMenu = (a: Agent): ContextMenuItem[] => [
+    {
+      label: "Delete agent",
+      danger: true,
+      onSelect: () => void deleteAgent(a),
+    },
+  ];
+
+  const workspaceMenu = (wsId: string): ContextMenuItem[] => [
+    {
+      label: "Delete space",
+      danger: true,
+      disabled: !wsId || wsId === UNGROUPED,
+      onSelect: () => void deleteWorkspace(wsId),
+    },
+  ];
+
+  const shellMenu = (p: Agent): ContextMenuItem[] => [
+    {
+      label: "Delete terminal",
+      danger: true,
+      onSelect: () => void deleteShell(p),
+    },
+  ];
+
   const saveSettings = () => {
     const cfg: ShortcutConfig = { version: 1, shortcuts: draftShortcuts() };
     persistShortcuts(cfg);
@@ -1911,17 +2023,64 @@ export default function App() {
 
   // Left drawer + right Terminals scrub share one transform pair.
   // Terminal counters the right slide so it stays on-screen while chrome scrubs.
+  // Desktop skips --right-x: chips render under the Agents topbar instead.
   const shellStyle = () => {
     const style: Record<string, string> = {};
     if (drawerDragging()) style["--drawer-x"] = `${drawerX()}px`;
     else if (drawerOpen()) style["--drawer-x"] = `${SIDEBAR_W}px`;
     else style["--drawer-x"] = "0px";
 
-    if (rightDragging()) style["--right-x"] = `${rightX()}px`;
-    else if (rightOpen()) style["--right-x"] = "100vw";
-    else style["--right-x"] = "0px";
+    if (!isMobile()) {
+      style["--right-x"] = "0px";
+    } else if (rightDragging()) {
+      style["--right-x"] = `${rightX()}px`;
+    } else if (rightOpen()) {
+      style["--right-x"] = "100vw";
+    } else {
+      style["--right-x"] = "0px";
+    }
     return style;
   };
+
+  const terminalsChips = () => (
+    <div class="terminals-chips" aria-label="Shell panes">
+      <div class="terminals-chips-scroll">
+        <For each={focusedShells()}>
+          {(p) => {
+            const id = agentId(p);
+            const menu = contextMenuBind(() => shellMenu(p));
+            return (
+              <button
+                type="button"
+                class="term-chip"
+                classList={{ active: id === selected() }}
+                onClick={() => selectShell(p)}
+                onContextMenu={menu.onContextMenu}
+                onTouchStart={menu.onTouchStart}
+                onTouchMove={menu.onTouchMove}
+                onTouchEnd={menu.onTouchEnd}
+                onTouchCancel={menu.onTouchCancel}
+              >
+                {shellLabel(p)}
+              </button>
+            );
+          }}
+        </For>
+        <button
+          type="button"
+          class="term-chip term-chip-add"
+          title="New shell"
+          aria-label="New shell"
+          onClick={(e) => {
+            e.stopPropagation();
+            void createOrFocusShell();
+          }}
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div class="app">
@@ -2016,6 +2175,10 @@ export default function App() {
             <For each={workspaceGroups()}>
               {(g) => {
                 const open = () => !!expandedIds()[g.id];
+                const wsMenu =
+                  g.id !== UNGROUPED
+                    ? contextMenuBind(() => workspaceMenu(g.id))
+                    : null;
                 return (
                   <div class="workspace" classList={{ open: open() }}>
                     <div class="workspace-header">
@@ -2023,6 +2186,11 @@ export default function App() {
                         type="button"
                         class="workspace-toggle"
                         onClick={() => toggleWorkspace(g.id)}
+                        onContextMenu={wsMenu?.onContextMenu}
+                        onTouchStart={wsMenu?.onTouchStart}
+                        onTouchMove={wsMenu?.onTouchMove}
+                        onTouchEnd={wsMenu?.onTouchEnd}
+                        onTouchCancel={wsMenu?.onTouchCancel}
                       >
                         <span class="workspace-chevron" aria-hidden="true">
                           <IconCaretDown class="workspace-chevron-icon" />
@@ -2049,12 +2217,18 @@ export default function App() {
                         <For each={g.agents}>
                           {(a) => {
                             const id = agentId(a);
+                            const menu = contextMenuBind(() => agentMenu(a));
                             return (
                               <button
                                 type="button"
                                 class="agent-row"
                                 classList={{ active: id === selected() }}
                                 onClick={() => selectAgent(id)}
+                                onContextMenu={menu.onContextMenu}
+                                onTouchStart={menu.onTouchStart}
+                                onTouchMove={menu.onTouchMove}
+                                onTouchEnd={menu.onTouchEnd}
+                                onTouchCancel={menu.onTouchCancel}
                               >
                                 <span class="dot-wrap">
                                   <span class="dot" data-status={a.agent_status} />
@@ -2157,37 +2331,7 @@ export default function App() {
               ←
             </button>
           </header>
-          <div class="terminals-chips" aria-label="Shell panes">
-            <div class="terminals-chips-scroll">
-              <For each={focusedShells()}>
-                {(p) => {
-                  const id = agentId(p);
-                  return (
-                    <button
-                      type="button"
-                      class="term-chip"
-                      classList={{ active: id === selected() }}
-                      onClick={() => selectShell(p)}
-                    >
-                      {shellLabel(p)}
-                    </button>
-                  );
-                }}
-              </For>
-              <button
-                type="button"
-                class="term-chip term-chip-add"
-                title="New shell"
-                aria-label="New shell"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void createOrFocusShell();
-                }}
-              >
-                +
-              </button>
-            </div>
-          </div>
+          {terminalsChips()}
         </aside>
 
         <div class="main main-shift">
@@ -2233,6 +2377,11 @@ export default function App() {
               </button>
             </div>
           </header>
+
+          {/* Desktop: chips under Agents topbar. Mobile uses .right-panel. */}
+          <Show when={rightOpen()}>
+            <div class="terminals-chips-desktop">{terminalsChips()}</div>
+          </Show>
 
           <Show when={error()}>
             <div class="error">{error()}</div>
@@ -2356,6 +2505,8 @@ export default function App() {
             </button>
           </div>
 
+          <div class="sheet-body">
+
           <Show when={settingsTab() === "general"}>
             <div class="settings-general">
               <label class="field">
@@ -2384,35 +2535,41 @@ export default function App() {
             copy to another phone.
           </p>
 
-          <div class="shortcut-list">
-            <For each={draftShortcuts()}>
-              {(s) => (
-                <div class="shortcut-row" classList={{ editing: editingId() === s.id }}>
+          <SortableList
+              items={draftShortcuts}
+              onReorder={(from, to) => reorderDraft(from, to)}
+            >
+              {({ item: s, isDragging, isDropBefore, isDropAfter, handleProps }) => (
+                <div
+                  class="shortcut-row"
+                  data-sortable-id={s.id}
+                  classList={{
+                    editing: editingId() === s.id,
+                    dragging: isDragging(),
+                    "drop-before": isDropBefore(),
+                    "drop-after": isDropAfter(),
+                  }}
+                >
+                  <div {...handleProps}>⠿</div>
                   <div class="shortcut-main">
                     <div class="shortcut-label">{s.label}</div>
                     <div class="shortcut-chords">{formatChords(s.chords)}</div>
                   </div>
                   <div class="shortcut-actions">
-                    <button type="button" class="mini" onClick={() => moveDraft(s.id, -1)} title="Move left">
-                      ←
-                    </button>
-                    <button type="button" class="mini" onClick={() => moveDraft(s.id, 1)} title="Move right">
-                      →
-                    </button>
                     <button type="button" class="mini" onClick={() => startEdit(s)}>
                       Edit
                     </button>
-                    <button type="button" class="mini danger" onClick={() => removeDraft(s.id)}>
+                    <button
+                      type="button"
+                      class="mini danger"
+                      onClick={() => removeDraft(s.id)}
+                    >
                       Del
                     </button>
                   </div>
                 </div>
               )}
-            </For>
-            <Show when={!draftShortcuts().length}>
-              <div class="empty-inline">No shortcuts yet.</div>
-            </Show>
-          </div>
+            </SortableList>
 
           <Show
             when={editingId()}
@@ -2590,15 +2747,6 @@ export default function App() {
             </div>
           </Show>
 
-          <div class="settings-actions">
-            <button type="button" class="sheet-primary" onClick={() => saveSettings()}>
-              Save
-            </button>
-            <button type="button" class="sheet-secondary" onClick={() => resetDefaults()}>
-              Reset defaults
-            </button>
-          </div>
-
           <Show when={settingsMsg()}>
             <div class="settings-msg">{settingsMsg()}</div>
           </Show>
@@ -2630,9 +2778,24 @@ export default function App() {
               </button>
             </label>
           </details>
+
+          <button type="button" class="sheet-secondary settings-reset" onClick={() => resetDefaults()}>
+            Reset defaults
+          </button>
           </Show>
+          </div>
+
+          <div class="settings-footer">
+            <button type="button" class="sheet-secondary" onClick={() => closeSettings()}>
+              Cancel
+            </button>
+            <button type="button" class="sheet-primary" onClick={() => saveSettings()}>
+              Save
+            </button>
+          </div>
         </div>
       </Show>
+      <ContextMenuHost />
     </div>
   );
 }

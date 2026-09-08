@@ -109,9 +109,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/agents/{id}/keys", s.requireAuth(http.HandlerFunc(s.handleKeys)))
 	s.mux.Handle("GET /api/workspaces", s.requireAuth(http.HandlerFunc(s.handleListWorkspaces)))
 	s.mux.Handle("POST /api/workspaces", s.requireAuth(http.HandlerFunc(s.handleCreateWorkspace)))
+	s.mux.Handle("DELETE /api/workspaces/{id}", s.requireAuth(http.HandlerFunc(s.handleCloseWorkspace)))
 	s.mux.Handle("GET /api/panes", s.requireAuth(http.HandlerFunc(s.handleListPanes)))
+	s.mux.Handle("DELETE /api/panes/{id}", s.requireAuth(http.HandlerFunc(s.handleClosePane)))
 	s.mux.Handle("POST /api/tabs", s.requireAuth(http.HandlerFunc(s.handleCreateTab)))
 	s.mux.Handle("POST /api/tabs/{id}/focus", s.requireAuth(http.HandlerFunc(s.handleFocusTab)))
+	s.mux.Handle("DELETE /api/tabs/{id}", s.requireAuth(http.HandlerFunc(s.handleCloseTab)))
 	s.mux.Handle("GET /api/project-favicon", s.requireAuth(http.HandlerFunc(s.handleProjectFavicon)))
 	s.mux.Handle("/ws/term", s.requireAuth(&relay.Handler{Herdr: s.herdr}))
 
@@ -403,6 +406,45 @@ func (s *Server) handleFocusTab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.FocusTab(id); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleCloseTab(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tab id required"})
+		return
+	}
+	if err := s.client.CloseTab(id); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleCloseWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspace id required"})
+		return
+	}
+	if err := s.client.CloseWorkspace(id); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleClosePane(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pane id required"})
+		return
+	}
+	if err := s.client.ClosePane(id); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
