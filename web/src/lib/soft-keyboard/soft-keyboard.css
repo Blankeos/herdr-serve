@@ -103,6 +103,7 @@
 }
 
 .sk-spacer {
+  box-sizing: border-box;
   flex: 0.5 0.5 0;
   min-width: 0;
   height: 100%;
@@ -125,6 +126,7 @@
 }
 
 .sk-key {
+  box-sizing: border-box;
   position: relative;
   display: inline-flex;
   align-items: stretch;

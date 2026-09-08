@@ -62,6 +62,12 @@ import {
   contextMenuBind,
   type ContextMenuItem,
 } from "./lib/context-menu";
+import { PhotoUpload } from "./lib/photo-upload";
+import { PushSettings, consumeAgentDeepLink } from "./lib/notifications";
+import {
+  keepHardwareCursorVisible,
+  markHardwareCursorHost,
+} from "./lib/terminal";
 
 const SIDEBAR_W = 272;
 const UNGROUPED = "ungrouped";
@@ -638,6 +644,16 @@ export default function App() {
 
   // refresh* returns true when it actually wrote new data, which drives the
   // adaptive poll cadence (fast while things change, slower at rest).
+  // Notification deep link (`/?agent=<id>` from SW notificationclick):
+  // consumed once at App initialization. refreshAgents selects the matching
+  // agent when it appears, overriding the default focused-first pick.
+  // Cleared only when resolved so a slow first poll can still honor it.
+  let pendingDeepLink: string | null = null;
+  try {
+    pendingDeepLink = consumeAgentDeepLink();
+  } catch {
+    pendingDeepLink = null;
+  }
   let agentsInFlight = false;
   let agentsFails = 0;
   const refreshAgents = async (silent = false): Promise<boolean> => {
@@ -654,7 +670,20 @@ export default function App() {
         changed = next !== prev;
         return next;
       });
-      if (!selected() && list.length) {
+      if (pendingDeepLink) {
+        const match = list.find(
+          (a) =>
+            a.terminal_id === pendingDeepLink ||
+            a.pane_id === pendingDeepLink,
+        );
+        if (match) {
+          setSelected(match.terminal_id || match.pane_id);
+          pendingDeepLink = null;
+        } else if (!selected() && list.length) {
+          const focused = list.find((a) => a.focused) ?? list[0];
+          setSelected(focused.terminal_id || focused.pane_id);
+        }
+      } else if (!selected() && list.length) {
         const focused = list.find((a) => a.focused) ?? list[0];
         setSelected(focused.terminal_id || focused.pane_id);
       }
@@ -1665,6 +1694,11 @@ export default function App() {
     term = new Terminal({
       convertEol: false,
       cursorBlink: true,
+      cursorStyle: "block",
+      // Soft keyboard never focuses xterm (would pop native IME), so xterm
+      // stays blurred and would render a hollow `outline` cursor — nearly
+      // invisible on phones. Solid block keeps HW/BT + soft-kb users oriented.
+      cursorInactiveStyle: "block",
       fontFamily:
         '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 12,
@@ -1685,6 +1719,8 @@ export default function App() {
     fit = new FitAddon();
     term.loadAddon(fit);
     term.open(termHost!);
+    markHardwareCursorHost(termHost);
+    keepHardwareCursorVisible(term);
     prepareMobileInput(term);
     fit.fit();
     setTermReady(true);
@@ -2456,8 +2492,39 @@ export default function App() {
             </Show>
           </div>
           <div class="sidebar-agents" aria-label="Live agents">
-            <div class="sidebar-section-head">
+            <div class="sidebar-section-head sidebar-agents-head">
               <span class="sidebar-section-title">Agents</span>
+              {/* Compact Priority/Grouped toggle INLINE next to the heading
+                  (no extra row; mirrors herdr Spaces=>"grouped",
+                  Priority=>"priority"). */}
+              <div
+                class="agent-sort-toggle agent-sort-toggle-inline"
+                role="tablist"
+                aria-label="Agent sort"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  class="agent-sort-btn"
+                  classList={{ active: agentSort() === "priority" }}
+                  aria-selected={agentSort() === "priority"}
+                  title="Attention queue: blocked, done, working, idle, unknown (flat, like herdr priority)"
+                  onClick={() => setAgentSortPersist("priority")}
+                >
+                  Priority
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="agent-sort-btn"
+                  classList={{ active: agentSort() === "grouped" }}
+                  aria-selected={agentSort() === "grouped"}
+                  title="Grouped by workspace in native order (like herdr spaces)"
+                  onClick={() => setAgentSortPersist("grouped")}
+                >
+                  Grouped
+                </button>
+              </div>
               <div class="sidebar-section-actions">
                 <Show
                   when={liveCounts().total > 0}
@@ -2467,7 +2534,7 @@ export default function App() {
                     class="workspace-count"
                     title={`${liveCounts().live} live / ${liveCounts().total} total`}
                   >
-                    {liveCounts().live}/{liveCounts().total} live
+                    {liveCounts().live}/{liveCounts().total}
                   </span>
                 </Show>
                 <button
@@ -2480,34 +2547,6 @@ export default function App() {
                   +
                 </button>
               </div>
-            </div>
-            {/* Native herdr Agents header carries a clickable sort toggle
-                (Spaces=>"grouped", Priority=>"priority"). Mirror it here so the
-                phone sidebar matches: Priority = flat attention queue,
-                Grouped = workspaces in native order (like herdr spaces). */}
-            <div class="agent-sort-toggle" role="tablist" aria-label="Agent sort">
-              <button
-                type="button"
-                role="tab"
-                class="agent-sort-btn"
-                classList={{ active: agentSort() === "priority" }}
-                aria-selected={agentSort() === "priority"}
-                title="Attention queue: blocked, done, working, idle, unknown (flat, like herdr priority)"
-                onClick={() => setAgentSortPersist("priority")}
-              >
-                Priority
-              </button>
-              <button
-                type="button"
-                role="tab"
-                class="agent-sort-btn"
-                classList={{ active: agentSort() === "grouped" }}
-                aria-selected={agentSort() === "grouped"}
-                title="Grouped by workspace in native order (like herdr spaces)"
-                onClick={() => setAgentSortPersist("grouped")}
-              >
-                Grouped
-              </button>
             </div>
             {/* Independent scroll region (unchanged): only this div scrolls,
                 the Workspaces `.sidebar-scroll` above stays independent.
@@ -2757,6 +2796,33 @@ export default function App() {
                   Add shortcuts…
                 </button>
               </Show>
+              <PhotoUpload
+                selectedId={selected()}
+                disabled={conn() !== "live"}
+                onInsertText={(text, terminalId) => {
+                  // Never misroute: the component captured terminalId at
+                  // picker-open time; verify it still matches the live
+                  // selection + active socket before enqueueing. Throw so
+                  // the component surfaces the error inline.
+                  const cur = selected();
+                  if (!terminalId || terminalId !== cur) {
+                    throw new Error(
+                      "Terminal changed — photo not inserted; reselect and try again.",
+                    );
+                  }
+                  if (activeTermID !== terminalId) {
+                    throw new Error(
+                      "Terminal not connected — photo not inserted; try again.",
+                    );
+                  }
+                  if (conn() !== "live") {
+                    throw new Error(
+                      "Terminal not connected — photo not inserted; try again.",
+                    );
+                  }
+                  enqueueTerminalInput(text);
+                }}
+              />
             </div>
           </nav>
 
@@ -2974,6 +3040,7 @@ export default function App() {
                 otherwise falls back to host scrollback. Mouse reports and key chords always
                 send those inputs; host always scrolls the terminal buffer.
               </p>
+              <PushSettings />
             </div>
           </Show>
 

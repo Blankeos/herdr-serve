@@ -1,34 +1,7 @@
-@font-face {
-  font-family: "Geist";
-  src: url("/fonts/Geist-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Geist";
-  src: url("/fonts/Geist-Medium.woff2") format("woff2");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Geist";
-  src: url("/fonts/Geist-SemiBold.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Geist";
-  src: url("/fonts/Geist-Bold.woff2") format("woff2");
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-sans/latin-700.css";
 
 :root {
   /* Keep app chrome dark via tokens, but allow system prefers-color-scheme
@@ -55,8 +28,8 @@
   --sidebar-w: 272px;
   --drawer-x: 0px;
   --right-x: 0px;
-  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
-    sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, Segoe UI,
+    Roboto, sans-serif;
   --font-mono: "JetBrainsMono Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo,
     Consolas, monospace;
   font-family: var(--font-sans);
@@ -1310,22 +1283,58 @@ textarea {
   color: var(--muted);
 }
 
-/* Agents sort toggle (sidebar-only): clickable Priority / Grouped switch that
-   mirrors herdr's agents-panel sort toggle (Spaces=>"grouped",
-   Priority=>"priority"). Sits above the independent scroll region so the
-   Workspaces `.sidebar-scroll` and Agents `.sidebar-agents-scroll` each keep
-   their own scroll. */
-.agent-sort-toggle {
+/* Agents sort toggle (sidebar-only): compact Priority / Grouped switch INLINE
+   next to the AGENTS heading (no extra row), mirroring herdr's agents-panel
+   sort toggle (Spaces=>"grouped", Priority=>"priority"). Lives inside
+   `.sidebar-agents-head` so Workspaces `.sidebar-scroll` and Agents
+   `.sidebar-agents-scroll` each keep their own scroll. Narrow-sidebar fit:
+   single-row flex with tight gaps, small pill buttons, and a compact count. */
+.sidebar-agents-head {
+  gap: 0.4rem;
+  padding: 0.55rem 0.5rem 0.35rem 0.65rem;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.sidebar-agents-head .sidebar-section-title {
   flex: 0 0 auto;
+}
+
+.sidebar-agents-head .sidebar-section-actions {
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.sidebar-agents-head .workspace-count {
+  white-space: nowrap;
+  font-size: 0.62rem;
+  padding: 0.05rem 0.28rem;
+}
+
+.sidebar-agents-head .workspace-add {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.agent-sort-toggle {
+  flex: 0 1 auto;
   display: inline-flex;
-  align-self: flex-start;
-  gap: 0.15rem;
-  margin: 0 0.65rem 0.4rem;
-  padding: 0.12rem;
+  align-items: center;
+  gap: 0.1rem;
+  margin: 0;
+  padding: 0.1rem;
   border: 1px solid color-mix(in srgb, #fff 6%, var(--border));
   border-radius: 999px;
   background: color-mix(in srgb, #fff 3%, #141414);
-  max-width: calc(100% - 1.3rem);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.agent-sort-toggle-inline {
+  margin: 0;
 }
 
 .agent-sort-btn {
@@ -1334,12 +1343,14 @@ textarea {
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  padding: 0.24rem 0.65rem;
-  font-size: 0.7rem;
+  padding: 0.18rem 0.45rem;
+  font-size: 0.64rem;
   font-weight: 550;
   letter-spacing: 0.01em;
+  line-height: 1.2;
   cursor: pointer;
   touch-action: manipulation;
+  white-space: nowrap;
 }
 
 .agent-sort-btn:hover {

@@ -84,8 +84,8 @@ when the picker opened, not the live selection.
 
 ## Behavior contract
 
-- Take photo opens the camera (iOS `capture="environment"`); Photo library
-  opens the picker. Both require a selected terminal (buttons disabled +
+- Photo library opens the native picker (including camera/files on iOS).
+  It requires a selected terminal (button disabled +
   `"Select a terminal first"` otherwise).
 - Upload is authorized multipart, bounded (client + server 15 MiB → clear
   `"Photo too large…"` / `413` errors), image-validated incl. HEIC.
@@ -99,7 +99,19 @@ when the picker opened, not the live selection.
 
 1. `go test ./internal/server/ -run Upload -v` (backend validations).
 2. `just ui` / `vite build`, mount per above in the dock.
-3. On iPhone (or devtools mobile): tap Take photo → snap → path appears in
-   the selected terminal with no newline; tap Photo library → pick → same.
+3. On iPhone: tap Photo library, choose a photo or take one → path appears
+   in the selected terminal with no newline.
 4. No-terminal state shows the hint; airplane-mode upload shows the network
    error; oversize/non-image files show the validation error.
+
+## Storage and cleanup
+
+Uploads are persisted by **herdr-serve**, not herdr's temporary storage. On
+macOS the default is `~/Library/Application Support/herdr-serve/uploads`.
+There is currently **no automatic expiration**: agents may still need an
+inserted path later. Delete files from this directory when no longer needed;
+previously inserted paths to deleted files will stop working.
+
+Set `HERDR_SERVE_UPLOAD_DIR` before starting the server to use another
+directory (existing uploads are not moved). A temporary directory can be
+used, but OS cleanup may remove images that agents still need.

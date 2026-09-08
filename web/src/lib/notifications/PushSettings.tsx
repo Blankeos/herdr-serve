@@ -1,6 +1,5 @@
 import { Show, createSignal, onMount } from "solid-js";
 import {
-  consumeAgentDeepLink,
   disablePush,
   ensurePushSubscribed,
   getPushState,
@@ -8,7 +7,6 @@ import {
 } from "./push";
 
 export type { PushState };
-export { consumeAgentDeepLink };
 
 /**
  * PushSettings — drop-in Solid component the parent mounts (e.g. in Settings).
@@ -22,9 +20,10 @@ export { consumeAgentDeepLink };
  * - Shows graceful states for unsupported browsers, insecure contexts
  *   (HTTP LAN without TLS), and iOS Home-Screen installation guidance.
  * - Uses inline styles only (no styles.css dependency).
- * - After a notification tap the service worker opens `/?agent=<id>`;
- *   the parent should call `consumeAgentDeepLink()` on launch and select
- *   the matching agent (see ./README.md).
+ * - After a notification tap the service worker opens `/?agent=<id>`; the
+ *   parent (App) calls `consumeAgentDeepLink()` on launch and selects the
+ *   matching agent (see ./README.md). This component never consumes the
+ *   deep link so App alone owns selection.
  */
 export function PushSettings() {
   const [state, setState] = createSignal<PushState | null>(null);
@@ -42,9 +41,6 @@ export function PushSettings() {
 
   onMount(() => {
     void refresh();
-    // If we were opened from a notification tap, surface which agent.
-    const deep = consumeAgentDeepLink();
-    if (deep) setNote(`Opened from notification for agent ${deep}.`);
   });
 
   const enable = async () => {
@@ -69,9 +65,12 @@ export function PushSettings() {
   const disable = async () => {
     setBusy(true);
     setError("");
+    setNote("");
     try {
       await disablePush();
       setNote("Notifications off for this device.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
       await refresh();

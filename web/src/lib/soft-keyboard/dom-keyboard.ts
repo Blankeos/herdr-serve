@@ -814,6 +814,11 @@ export function createDomSoftKeyboard(
     const frag = document.createDocumentFragment();
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r]!;
+      // Percentage slots include key padding, keeping edge keys and gaps
+      // identical even when the punctuation row has fewer key faces.
+      const weight = (key: SoftKeyDef) => key.flex ?? (key.kind === "spacer" ? 0.5 : 1);
+      const totalWeight = row.reduce((sum, key) => sum + weight(key), 0);
+      const slotFlex = (key: SoftKeyDef) => `0 0 ${(weight(key) / totalWeight) * 100}%`;
       const rowEl = document.createElement("div");
       const isAccessory = row.some(
         (k) => k.kind === "action" && (k.id === "emoji" || k.id === "mic"),
@@ -826,7 +831,7 @@ export function createDomSoftKeyboard(
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "sk-spacer sk-spacer-hit";
-            btn.style.flex = String(key.flex ?? 0.5);
+            btn.style.flex = slotFlex(key);
             btn.dataset.skRow = String(r);
             btn.dataset.skCol = String(c);
             btn.setAttribute(
@@ -837,7 +842,7 @@ export function createDomSoftKeyboard(
           } else {
             const sp = document.createElement("div");
             sp.className = "sk-spacer";
-            sp.style.flex = String(key.flex ?? 0.5);
+            sp.style.flex = slotFlex(key);
             sp.setAttribute("aria-hidden", "true");
             rowEl.appendChild(sp);
           }
@@ -847,7 +852,7 @@ export function createDomSoftKeyboard(
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = `sk-key${key.className ? ` ${key.className}` : ""}`;
-        btn.style.flex = String(key.flex ?? 1);
+        btn.style.flex = slotFlex(key);
         btn.dataset.skRow = String(r);
         btn.dataset.skCol = String(c);
         btn.setAttribute(

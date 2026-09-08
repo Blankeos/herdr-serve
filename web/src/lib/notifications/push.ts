@@ -170,8 +170,13 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
  * (button click) — browsers (and iOS in particular) reject
  * Notification.requestPermission() outside one.
  *
- * Steps: register SW -> request permission -> PushManager.subscribe ->
+ * Steps: request permission -> register SW -> PushManager.subscribe ->
  * POST /api/push/subscribe. Throws with a human-readable message on failure.
+ *
+ * iOS user-gesture retention: Notification.requestPermission() MUST run
+ * before ANY await in this function. Any awaited work (SW register, fetch)
+ * before the permission prompt breaks the transient-activation chain and
+ * iOS silently denies/dismisses the prompt.
  */
 export async function ensurePushSubscribed(): Promise<{ endpoint: string }> {
   const support = pushSupport();
@@ -189,6 +194,16 @@ export async function ensurePushSubscribed(): Promise<{ endpoint: string }> {
     throw new Error("Push notifications are not supported in this browser.");
   }
 
+  // No await before this line — preserves the click's user gesture on iOS.
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error(
+      permission === "denied"
+        ? "Notifications are blocked — allow them in the browser / system settings, then try again."
+        : "Permission dismissed — tap Enable again to allow notifications.",
+    );
+  }
+
   const reg = await navigator.serviceWorker.register(SW_PATH, {
     scope: "/",
   });
@@ -197,15 +212,6 @@ export async function ensurePushSubscribed(): Promise<{ endpoint: string }> {
     await navigator.serviceWorker.ready;
   } catch {
     /* ignore */
-  }
-
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") {
-    throw new Error(
-      permission === "denied"
-        ? "Notifications are blocked — allow them in the browser / system settings, then try again."
-        : "Permission dismissed — tap Enable again to allow notifications.",
-    );
   }
 
   const { publicKey } = await authed<{ publicKey: string }>(
@@ -241,27 +247,27 @@ export async function ensurePushSubscribed(): Promise<{ endpoint: string }> {
 /**
  * Disable background push: unsubscribe locally + remove the server endpoint.
  * Best called from a user gesture too (async work after click is fine).
+ *
+ * Never swallows server failures: if POST /api/push/unsubscribe fails the
+ * promise rejects so the caller can surface the error instead of falsely
+ * reporting "disabled" while the server still holds the endpoint.
  */
 export async function disablePush(): Promise<void> {
-  try {
-    const reg = await navigator.serviceWorker.getRegistration(SW_PATH);
-    const sub = await reg?.pushManager.getSubscription().catch(() => null);
-    const endpoint = sub?.endpoint || null;
-    if (sub) {
-      try {
-        await sub.unsubscribe();
-      } catch {
-        /* continue to server cleanup */
-      }
+  const reg = await navigator.serviceWorker.getRegistration(SW_PATH);
+  const sub = await reg?.pushManager.getSubscription().catch(() => null);
+  const endpoint = sub?.endpoint || null;
+  if (sub) {
+    try {
+      await sub.unsubscribe();
+    } catch {
+      /* continue to server cleanup */
     }
-    if (endpoint) {
-      await authed("/api/push/unsubscribe", {
-        method: "POST",
-        body: JSON.stringify({ endpoint }),
-      }).catch(() => undefined);
-    }
-  } catch {
-    /* idempotent — disabling never throws */
+  }
+  if (endpoint) {
+    await authed("/api/push/unsubscribe", {
+      method: "POST",
+      body: JSON.stringify({ endpoint }),
+    });
   }
 }
 

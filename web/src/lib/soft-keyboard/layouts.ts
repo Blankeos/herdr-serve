@@ -28,7 +28,7 @@ const spacer = (
  */
 export const EDGE_MOD_FLEX = 1.3;
 /** Punct-row total must equal the Z-row total (10) to keep px-per-flex stable. */
-export const PUNCT_FLEX = 1.48; // (10 - 1.3 - 1.3) / 5
+export const PUNCT_FLEX = 1.4; // (10 - 1.3 - 0.2 - 0.2 - 1.3) / 5
 
 /**
  * Only apostrophe auto-returns to ABC when typed from 123/#+=.
@@ -99,7 +99,9 @@ const NUMBERS: SoftKeyDef[][] = [
   ["-", "/", ":", ";", "(", ")", "$", "&", "@", '"'].map((c) => letter(c)),
   [
     { kind: "action", id: "symbols", label: "#+=", flex: EDGE_MOD_FLEX, className: "sk-mod sk-symbols" },
+    spacer(0.2, { actionAlias: "symbols" }),
     ...[".", ",", "?", "!", "'"].map((c) => ({ ...letter(c), flex: PUNCT_FLEX })),
+    spacer(0.2, { actionAlias: "backspace" }),
     BACKSPACE,
   ],
   bottomMain({ kind: "action", id: "letters", label: "ABC", flex: 1.2, className: "sk-mod" }),
@@ -111,7 +113,9 @@ const SYMBOLS: SoftKeyDef[][] = [
   ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"].map((c) => letter(c)),
   [
     { kind: "action", id: "numbers", label: "123", flex: EDGE_MOD_FLEX, className: "sk-mod sk-numbers" },
+    spacer(0.2, { actionAlias: "numbers" }),
     ...[".", ",", "?", "!", "'"].map((c) => ({ ...letter(c), flex: PUNCT_FLEX })),
+    spacer(0.2, { actionAlias: "backspace" }),
     BACKSPACE,
   ],
   bottomMain({ kind: "action", id: "letters", label: "ABC", flex: 1.2, className: "sk-mod" }),

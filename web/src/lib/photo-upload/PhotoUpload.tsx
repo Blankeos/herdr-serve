@@ -33,8 +33,8 @@ export type PhotoUploadProps = {
  *   import { PhotoUpload } from "./lib/photo-upload";
  *   <PhotoUpload selectedId={selected()} onInsertText={(t) => enqueueTerminalInput(t)} />
  *
- * - Two native inputs (accept="image/*"): one with capture="environment"
- *   (Take photo → rear camera on iOS) and one without (Photo library).
+ * - One native input (accept="image/*", no capture restriction), offering
+ *   the iOS photo library, camera, and file picker from one shortcut.
  * - Captures selectedId at picker opening; inserts the shell-quoted
  *   absolute path (+ trailing space, NO Enter) via onInsertText.
  * - Loading + error states are explicit and cleared on each new attempt.
@@ -44,7 +44,6 @@ export function PhotoUpload(props: PhotoUploadProps) {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
 
-  let cameraInput: HTMLInputElement | undefined;
   let libraryInput: HTMLInputElement | undefined;
   // Captured at picker-open time; the upload+insert below uses this, never
   // the live props.selectedId (which may change while the picker is open).
@@ -52,15 +51,15 @@ export function PhotoUpload(props: PhotoUploadProps) {
 
   const isDisabled = () => Boolean(props.disabled) || busy() || !props.selectedId;
 
-  const openPicker = (which: "camera" | "library") => {
-    if (busy()) return;
+  const openPicker = () => {
+    if (isDisabled()) return;
     setError("");
     capturedId = (props.selectedId || "").trim();
     if (!capturedId) {
       setError("Select a terminal first");
       return;
     }
-    const el = which === "camera" ? cameraInput : libraryInput;
+    const el = libraryInput;
     // Reset so picking the same photo twice still fires onChange.
     try {
       if (el) el.value = "";
@@ -108,7 +107,7 @@ export function PhotoUpload(props: PhotoUploadProps) {
     "border-radius": "0.35rem",
     padding: "0.45rem 0.65rem",
     "font-size": "0.78rem",
-    "font-family": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    "font-family": "inherit",
     "min-height": "2.1rem",
     cursor: enabled ? "pointer" : "default",
     opacity: enabled ? "1" : "0.45",
@@ -137,19 +136,9 @@ export function PhotoUpload(props: PhotoUploadProps) {
         type="button"
         style={btn(!isDisabled())}
         disabled={isDisabled()}
-        title={props.selectedId ? "Take a photo and insert its path" : "Select a terminal first"}
-        aria-label="Take photo"
-        onClick={() => openPicker("camera")}
-      >
-        {busy() ? "Uploading…" : "📷 Take photo"}
-      </button>
-      <button
-        type="button"
-        style={btn(!isDisabled())}
-        disabled={isDisabled()}
         title={props.selectedId ? "Pick from photo library and insert its path" : "Select a terminal first"}
         aria-label="Photo library"
-        onClick={() => openPicker("library")}
+        onClick={openPicker}
       >
         {busy() ? "Uploading…" : "🖼 Photo library"}
       </button>
@@ -163,17 +152,7 @@ export function PhotoUpload(props: PhotoUploadProps) {
           {error()}
         </p>
       </Show>
-      {/* Native iOS inputs: accept=image/* both; capture=environment only on Take photo. */}
-      <input
-        ref={cameraInput}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        aria-hidden="true"
-        tabindex={-1}
-        style={{ display: "none" }}
-        onChange={(e) => void handleFiles(e.currentTarget.files)}
-      />
+      {/* No capture restriction: iOS offers library, camera, and files. */}
       <input
         ref={libraryInput}
         type="file"
