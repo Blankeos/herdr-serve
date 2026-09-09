@@ -43,8 +43,14 @@
   color-scheme: dark light;
   user-select: none;
   -webkit-user-select: none;
-  touch-action: manipulation;
+  /* Padding and nearest-key hit areas belong to the keyboard too. Allowing
+     pan/pinch here lets the browser cancel a slightly drifting contact. */
+  touch-action: none;
   -webkit-touch-callout: none;
+}
+
+.sk-row > [hidden] {
+  display: none;
 }
 
 /* System light keyboard — Apple-like light chrome */
@@ -79,7 +85,7 @@
   max-width: 430px;
   margin: 0 auto;
   /* Critical for multi-touch reliability on iOS Safari. */
-  touch-action: manipulation;
+  touch-action: none;
   -webkit-user-select: none;
   user-select: none;
 }

@@ -35,15 +35,15 @@ export type DomSoftKeyboard = {
 
 type ActivePress = {
   el: HTMLElement;
-  key: SoftKeyDef;
   ghost: HTMLElement | null;
   /** Backspace already fired its initial delete for this finger. */
   backspaceArmed: boolean;
   /** Finger slid off the keyboard — release commits nothing. */
   cancelled: boolean;
+  /** A later contact finalized this selection; its eventual release is a no-op. */
+  committed: boolean;
   /** Last key we successfully highlighted — used if touchend jitters off-key. */
   lastGoodKey: SoftKeyDef;
-  lastGoodEl: HTMLElement;
 };
 
 type KeyHit = {
@@ -63,6 +63,7 @@ type KeyHit = {
  *   touchstart → highlight only
  *   touchmove  → highlight follows thumb (c→v, j→k)
  *   touchend   → commit the key under the finger
+ *   next touchstart → finalize older selections in press order (thumb rollover)
  *
  * Backspace is the exception (Apple-like):
  *   fires on press + hold-repeat while finger stays on ⌫
@@ -84,6 +85,21 @@ export function createDomSoftKeyboard(
     onPaste: opts.onPaste,
   };
 
+  const finalizePress = (press: ActivePress, commit: boolean) => {
+    if (press.committed) return;
+    press.committed = true;
+    clearVisual(press);
+    if (commit && !press.cancelled) commitKey(press.lastGoodKey);
+  };
+
+  const finalizeOlderPresses = () => {
+    // Fast two-thumb typing routinely lifts fingers in a different order from
+    // their downs. Finalize the older selection before resolving the new key:
+    // Shift -> C -> a must use the newly selected layer, never stale key values.
+    clearRepeat();
+    for (const press of active.values()) finalizePress(press, true);
+  };
+
   let layout: SoftKeyboardLayout = "letters";
   let shiftLatched = false;
   let lastShiftTapAt = 0;
@@ -92,8 +108,6 @@ export function createDomSoftKeyboard(
 
   let repeatTimer: number | undefined;
   let repeatEvery: number | undefined;
-  let renderRaf = 0;
-  let renderPending = false;
   let hitCacheRaf = 0;
   let destroyed = false;
 
@@ -102,6 +116,7 @@ export function createDomSoftKeyboard(
   const usePointerEvents = typeof window.PointerEvent === "function";
   let hitCache: KeyHit[] = [];
   let hitCacheAt = 0;
+  let hitBounds: DOMRect | undefined;
 
   const root = document.createElement("div");
   root.className = `soft-keyboard${opts.className ? ` ${opts.className}` : ""}`;
@@ -163,6 +178,7 @@ export function createDomSoftKeyboard(
     const next: KeyHit[] = [];
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i]!;
+      if (el.hidden) continue;
       const row = Number(el.dataset.skRow);
       const col = Number(el.dataset.skCol);
       if (!Number.isFinite(row) || !Number.isFinite(col)) continue;
@@ -180,6 +196,7 @@ export function createDomSoftKeyboard(
     }
     hitCache = next;
     hitCacheAt = performance.now();
+    hitBounds = rowsEl.getBoundingClientRect();
   };
 
   const scheduleHitCache = () => {
@@ -192,24 +209,19 @@ export function createDomSoftKeyboard(
 
   const scheduleRender = () => {
     if (destroyed) return;
-    renderPending = true;
-    // Defer while a finger is down so slide-to-type never swaps under the thumb.
-    if (active.size > 0) return;
-    // Idle: render synchronously for native-instant layer switches.
-    // rAF-only rendering left a one-frame window where fast sequential taps
-    // hit-tested against the previous layer's rects (123 → ABC double-type).
+    // Reuse the actual button nodes. Removing a touch target during Shift's
+    // auto-reset can detach a queued pointerdown before it reaches this root.
     render();
   };
 
   /**
    * Native post-insert layer policy.
    * - Shifted one-shot (not caps) always unlatches to letters.
-   * - Numbers/symbols auto-return to ABC only for iOS punct set
-   *   (".", ",", "?", "!", "'") — e.g. 123 → ' → ABC to keep typing words.
-   *   Digits, "-/:;()$&@\"", "[ ]{ }#%^ *+= _\|~<>€£¥•", space, and return
-   *   stay on their layer.
+   * - Numbers/symbols auto-return to ABC only after apostrophe.
+   *   All other punctuation, digits, space, and return stay on their layer.
    */
   const afterCharInsert = (value: string) => {
+    lastShiftTapAt = 0;
     if (layout === "shifted" && !shiftLatched) {
       layout = "letters";
       scheduleRender();
@@ -327,7 +339,14 @@ export function createDomSoftKeyboard(
 
   /** Spatial hit-test against cached key rects. Nearest-center fallback. */
   const hitKeyEl = (x: number, y: number, softPad = 28): HTMLElement | null => {
-    if (!hitCache.length || performance.now() - hitCacheAt > 2000) {
+    // Transforms and parent reflow don't necessarily emit a viewport resize.
+    // Read one cheap container rect, not every key rect, on the common path.
+    const bounds = rowsEl.getBoundingClientRect();
+    if (
+      !hitCache.length || performance.now() - hitCacheAt > 2000 ||
+      !hitBounds || bounds.left !== hitBounds.left || bounds.top !== hitBounds.top ||
+      bounds.width !== hitBounds.width || bounds.height !== hitBounds.height
+    ) {
       rebuildHitCache();
     }
 
@@ -396,11 +415,20 @@ export function createDomSoftKeyboard(
     return ghost;
   };
 
-  const armBackspaceRepeat = () => {
+  const armBackspaceRepeat = (id: number, press: ActivePress) => {
+    const canRepeat = () => open && !destroyed && active.get(id) === press &&
+      press.backspaceArmed && !press.committed && !press.cancelled;
+    // Handlers may synchronously close/destroy the keyboard or start a new key.
+    if (!canRepeat()) return;
     clearRepeat();
     // Initial delete already fired by caller.
     repeatTimer = window.setTimeout(() => {
-      repeatEvery = window.setInterval(() => handlers.onBackspace(), REPEAT_EVERY_MS);
+      repeatTimer = undefined;
+      if (!canRepeat()) return;
+      repeatEvery = window.setInterval(() => {
+        if (canRepeat()) handlers.onBackspace();
+        else clearRepeat();
+      }, REPEAT_EVERY_MS);
     }, REPEAT_DELAY_MS);
   };
 
@@ -419,18 +447,18 @@ export function createDomSoftKeyboard(
 
     const ghost = applyVisual(el, key);
     const backspace = isBackspaceKey(key);
-    active.set(id, {
+    const press: ActivePress = {
       el,
-      key,
       ghost,
       backspaceArmed: backspace,
       cancelled: false,
+      committed: false,
       lastGoodKey: key,
-      lastGoodEl: el,
-    });
+    };
+    active.set(id, press);
     if (backspace) {
       handlers.onBackspace();
-      if (active.size === 1) armBackspaceRepeat();
+      armBackspaceRepeat(id, press);
     }
   };
 
@@ -442,7 +470,7 @@ export function createDomSoftKeyboard(
     opts?: { allowCancel?: boolean },
   ) => {
     const press = active.get(id);
-    if (!press) return;
+    if (!press || press.committed) return;
     const allowCancel = opts?.allowCancel !== false;
 
     // During a slide, use a tighter pad so we don't sticky-hop too early.
@@ -472,20 +500,18 @@ export function createDomSoftKeyboard(
     const nowBackspace = isBackspaceKey(key);
 
     press.el = el;
-    press.key = key;
     press.ghost = ghost;
     press.cancelled = false;
     press.lastGoodKey = key;
-    press.lastGoodEl = el;
 
     if (wasBackspace && !nowBackspace) {
       clearRepeat();
       press.backspaceArmed = false;
     } else if (!wasBackspace && nowBackspace) {
       // Slid onto backspace — fire once + arm repeat (Apple-ish).
-      handlers.onBackspace();
       press.backspaceArmed = true;
-      if (active.size === 1) armBackspaceRepeat();
+      handlers.onBackspace();
+      armBackspaceRepeat(id, press);
     }
   };
 
@@ -494,37 +520,31 @@ export function createDomSoftKeyboard(
     if (!press) return;
     active.delete(id);
 
-    clearVisual(press);
-
-    if (commit && !press.cancelled) {
-      commitKey(press.lastGoodKey);
-    }
-
-    if (active.size === 0) {
+    finalizePress(press, commit);
+    if (![...active.values()].some(p => p.backspaceArmed && !p.committed && !p.cancelled)) {
       clearRepeat();
-      if (renderPending) scheduleRender();
-    } else {
-      let anyBs = false;
-      for (const p of active.values()) {
-        if (p.backspaceArmed) {
-          anyBs = true;
-          break;
-        }
-      }
-      if (!anyBs) clearRepeat();
     }
+  };
+
+  const startContact = (id: number, x: number, y: number) => {
+    if (!open || destroyed || active.has(id) || !hitKeyEl(x, y)) return;
+    finalizeOlderPresses();
+    if (!open || destroyed) return;
+    // An older Shift/123/ABC press may have just changed the layer/geometry.
+    const el = hitKeyEl(x, y);
+    if (el) beginPress(id, el);
   };
 
   const onTouchStart = (ev: TouchEvent) => {
     if (!open) return;
     if (ev.cancelable) ev.preventDefault();
     for (const t of Array.from(ev.changedTouches)) {
-      const el = hitKeyEl(t.clientX, t.clientY);
-      if (el) beginPress(t.identifier, el);
+      startContact(t.identifier, t.clientX, t.clientY);
     }
   };
 
   const onTouchMove = (ev: TouchEvent) => {
+    if (!Array.from(ev.changedTouches).some(t => active.has(t.identifier))) return;
     if (ev.cancelable) ev.preventDefault();
     for (const t of Array.from(ev.changedTouches)) {
       movePress(t.identifier, t.clientX, t.clientY);
@@ -532,6 +552,7 @@ export function createDomSoftKeyboard(
   };
 
   const onTouchEnd = (ev: TouchEvent) => {
+    if (!Array.from(ev.changedTouches).some(t => active.has(t.identifier))) return;
     if (ev.cancelable) ev.preventDefault();
     for (const t of Array.from(ev.changedTouches)) {
       if (ev.type === "touchend") {
@@ -545,11 +566,15 @@ export function createDomSoftKeyboard(
     if (!open || ev.button !== 0) return;
     // Avoid focusing buttons/xterm and opening the native keyboard.
     if (ev.cancelable) ev.preventDefault();
-    const el = hitKeyEl(ev.clientX, ev.clientY);
-    if (!el) return;
+    startContact(ev.pointerId, ev.clientX, ev.clientY);
+    if (!active.has(ev.pointerId)) return;
     // Capture on the stable root, not keys replaced during layer changes.
-    root.setPointerCapture(ev.pointerId);
-    beginPress(ev.pointerId, el);
+    try {
+      root.setPointerCapture(ev.pointerId);
+    } catch {
+      // A contact can end before a busy main thread handles pointerdown.
+      // Window listeners still deliver its queued move/up without capture.
+    }
   };
 
   const onPointerMove = (ev: PointerEvent) => {
@@ -560,23 +585,33 @@ export function createDomSoftKeyboard(
 
   const onPointerEnd = (ev: PointerEvent) => {
     if (!active.has(ev.pointerId)) return;
+    // Implicit capture can transfer from the touched button to our root.
+    // That descendant's bubbling lostpointercapture is not a cancelled press.
+    if (ev.type === "lostpointercapture" && ev.target !== root) return;
     const commit = ev.type === "pointerup";
     if (commit) {
       movePress(ev.pointerId, ev.clientX, ev.clientY, { allowCancel: false });
     }
     endPress(ev.pointerId, commit);
-    if (root.hasPointerCapture(ev.pointerId)) root.releasePointerCapture(ev.pointerId);
+    // pointerup/cancel automatically release capture; don't race the UA.
   };
 
   const onClick = (ev: MouseEvent) => {
     ev.preventDefault();
-    // Physical clicks are already handled above. Keep keyboard/AT activation,
-    // which has detail=0 and targets a button rather than screen coordinates.
-    if (!open || ev.detail !== 0) return;
+    // Touch-generated PointerEvent clicks can also have detail=0. Inspect the
+    // source, not a time/distance window (which drops legitimate fast taps).
+    const physicalPointer = "pointerType" in ev && Boolean(ev.pointerType);
+    const touchSource = (ev as MouseEvent & {
+      sourceCapabilities?: { firesTouchEvents?: boolean } | null;
+    }).sourceCapabilities?.firesTouchEvents;
+    if (!open || ev.detail !== 0 || physicalPointer || touchSource) return;
     const el = (ev.target as Element).closest<HTMLElement>("button[data-sk-row]");
-    if (!el || !root.contains(el)) return;
+    if (!el || el.hidden || !root.contains(el)) return;
+    // AT activates a semantic button, not a position on the next layout.
     const key = resolveKey(el);
     if (!key) return;
+    finalizeOlderPresses();
+    if (!open || destroyed) return;
     if (isBackspaceKey(key)) handlers.onBackspace();
     else commitKey(key);
   };
@@ -584,15 +619,15 @@ export function createDomSoftKeyboard(
   const touchOpts: AddEventListenerOptions = { passive: false, capture: true };
   if (usePointerEvents) {
     root.addEventListener("pointerdown", onPointerDown, true);
-    root.addEventListener("pointermove", onPointerMove, true);
-    root.addEventListener("pointerup", onPointerEnd, true);
-    root.addEventListener("pointercancel", onPointerEnd, true);
+    window.addEventListener("pointermove", onPointerMove, true);
+    window.addEventListener("pointerup", onPointerEnd, true);
+    window.addEventListener("pointercancel", onPointerEnd, true);
     root.addEventListener("lostpointercapture", onPointerEnd, true);
   } else {
     root.addEventListener("touchstart", onTouchStart, touchOpts);
-    root.addEventListener("touchmove", onTouchMove, touchOpts);
-    root.addEventListener("touchend", onTouchEnd, touchOpts);
-    root.addEventListener("touchcancel", onTouchEnd, touchOpts);
+    window.addEventListener("touchmove", onTouchMove, touchOpts);
+    window.addEventListener("touchend", onTouchEnd, touchOpts);
+    window.addEventListener("touchcancel", onTouchEnd, touchOpts);
   }
   root.addEventListener("click", onClick, true);
 
@@ -624,14 +659,7 @@ export function createDomSoftKeyboard(
   };
 
   const render = () => {
-    if (active.size > 0) {
-      renderPending = true;
-      return;
-    }
-    renderPending = false;
-    clearRepeat();
     const rows = layoutRows(layout);
-    const frag = document.createDocumentFragment();
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r]!;
       // Percentage slots include key padding, keeping edge keys and gaps
@@ -639,47 +667,35 @@ export function createDomSoftKeyboard(
       const weight = (key: SoftKeyDef) => key.flex ?? (key.kind === "spacer" ? 0.5 : 1);
       const totalWeight = row.reduce((sum, key) => sum + weight(key), 0);
       const slotFlex = (key: SoftKeyDef) => `0 0 ${(weight(key) / totalWeight) * 100}%`;
-      const rowEl = document.createElement("div");
+      const rowEl = rowsEl.children[r] as HTMLElement | undefined ?? document.createElement("div");
       const isAccessory = row.some(
         (k) => k.kind === "action" && (k.id === "emoji" || k.id === "mic"),
       );
       rowEl.className = isAccessory ? "sk-row sk-row-accessory" : "sk-row";
       for (let c = 0; c < row.length; c++) {
         const key = row[c]!;
-        if (key.kind === "spacer") {
-          if (key.alias || key.actionAlias) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "sk-spacer sk-spacer-hit";
-            btn.style.flex = slotFlex(key);
-            btn.dataset.skRow = String(r);
-            btn.dataset.skCol = String(c);
-            btn.setAttribute(
-              "aria-label",
-              key.alias ?? key.actionAlias ?? "spacer",
-            );
-            rowEl.appendChild(btn);
-          } else {
-            const sp = document.createElement("div");
-            sp.className = "sk-spacer";
-            sp.style.flex = slotFlex(key);
-            sp.setAttribute("aria-hidden", "true");
-            rowEl.appendChild(sp);
-          }
-          continue;
-        }
-
-        const btn = document.createElement("button");
+        // Keep every slot (and label) connected across layers. Even hiding an
+        // unused numeric-row slot is safer than detaching a queued touch target.
+        const btn = rowEl.children[c] as HTMLButtonElement | undefined ?? document.createElement("button");
         btn.type = "button";
-        btn.className = `sk-key${key.className ? ` ${key.className}` : ""}`;
+        btn.hidden = false;
+        const spacer = key.kind === "spacer";
+        const inert = spacer && !key.alias && !key.actionAlias;
+        btn.className = spacer
+          ? `sk-spacer${inert ? "" : " sk-spacer-hit"}`
+          : `sk-key${key.className ? ` ${key.className}` : ""}`;
         btn.style.flex = slotFlex(key);
         btn.dataset.skRow = String(r);
         btn.dataset.skCol = String(c);
+        btn.tabIndex = spacer ? -1 : 0;
+        if (inert) btn.setAttribute("aria-hidden", "true");
+        else btn.removeAttribute("aria-hidden");
         btn.setAttribute(
           "aria-label",
-          key.kind === "action" ? key.id : key.label,
+          spacer ? key.alias ?? key.actionAlias ?? "spacer" : key.kind === "action" ? key.id : key.label,
         );
         if (key.kind === "char") btn.dataset.skChar = key.value;
+        else delete btn.dataset.skChar;
 
         if (
           key.kind === "action" &&
@@ -691,16 +707,24 @@ export function createDomSoftKeyboard(
         if (key.kind === "action" && key.id === "mic" && micActive) {
           btn.classList.add("sk-active");
         }
+        if (key.kind === "action" && key.id === "shift") {
+          btn.setAttribute("aria-pressed", String(layout === "shifted"));
+        } else {
+          btn.removeAttribute("aria-pressed");
+        }
 
-        const label = document.createElement("span");
+        const label = btn.firstElementChild as HTMLElement | null ?? document.createElement("span");
         label.className = "sk-label";
-        label.innerHTML = labelHtml(key);
-        btn.appendChild(label);
-        rowEl.appendChild(btn);
+        const html = labelHtml(key);
+        if (label.innerHTML !== html) label.innerHTML = html;
+        if (!label.parentElement) btn.appendChild(label);
+        if (!btn.parentElement) rowEl.appendChild(btn);
       }
-      frag.appendChild(rowEl);
+      for (let c = row.length; c < rowEl.children.length; c++) {
+        (rowEl.children[c] as HTMLElement).hidden = true;
+      }
+      if (!rowEl.parentElement) rowsEl.appendChild(rowEl);
     }
-    rowsEl.replaceChildren(frag);
     root.classList.toggle("mic-on", micActive);
     // Rebuild hit rects synchronously so the next sequential tap (often
     // <16ms later on iOS) hit-tests the fresh layer, not the previous one.
@@ -714,6 +738,7 @@ export function createDomSoftKeyboard(
   return {
     root,
     setOpen(next) {
+      if (destroyed || open === next) return;
       open = next;
       root.hidden = !open;
       root.setAttribute("aria-hidden", open ? "false" : "true");
@@ -724,7 +749,7 @@ export function createDomSoftKeyboard(
         // Native dismiss clears one-shot shift only; caps (latched) survives.
         if (layout === "shifted" && !shiftLatched) {
           layout = "letters";
-          renderPending = true;
+          render();
         }
         // A dismissed shift gesture never carries into the next session.
         lastShiftTapAt = 0;
@@ -735,12 +760,9 @@ export function createDomSoftKeyboard(
           layout = "letters";
           shiftLatched = false;
           lastShiftTapAt = 0;
-          // Render now (no active presses while closed) so first tap rects
-          // are ABC rects, not leftover numbers rects.
-          if (active.size === 0) render();
-          else renderPending = true;
+          render();
         }
-        if (!renderPending) scheduleHitCache();
+        scheduleHitCache();
       }
     },
     setMicActive(activeMic) {
@@ -755,18 +777,17 @@ export function createDomSoftKeyboard(
     },
     destroy() {
       destroyed = true;
-      if (renderRaf) cancelAnimationFrame(renderRaf);
       if (hitCacheRaf) cancelAnimationFrame(hitCacheRaf);
       for (const id of [...active.keys()]) endPress(id, false);
       clearRepeat();
       root.removeEventListener("touchstart", onTouchStart, true);
-      root.removeEventListener("touchmove", onTouchMove, true);
-      root.removeEventListener("touchend", onTouchEnd, true);
-      root.removeEventListener("touchcancel", onTouchEnd, true);
+      window.removeEventListener("touchmove", onTouchMove, true);
+      window.removeEventListener("touchend", onTouchEnd, true);
+      window.removeEventListener("touchcancel", onTouchEnd, true);
       root.removeEventListener("pointerdown", onPointerDown, true);
-      root.removeEventListener("pointermove", onPointerMove, true);
-      root.removeEventListener("pointerup", onPointerEnd, true);
-      root.removeEventListener("pointercancel", onPointerEnd, true);
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerup", onPointerEnd, true);
+      window.removeEventListener("pointercancel", onPointerEnd, true);
       root.removeEventListener("lostpointercapture", onPointerEnd, true);
       root.removeEventListener("click", onClick, true);
       window.removeEventListener("resize", onViewport);
