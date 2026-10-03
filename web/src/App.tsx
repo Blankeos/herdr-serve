@@ -49,6 +49,8 @@ import {
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
 import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "./keyboardPrefs";
 import { SidebarPanels } from "./SidebarPanels";
+import { SidebarToggle } from "./SidebarToggle";
+import { ShortcutKeyboard } from "./ShortcutKeyboard";
 import { trackMobileViewport } from "./lib/mobile-viewport";
 import { startStatusRefresh } from "./lib/status-refresh";
 import { prepareTerminalInput } from "./lib/terminal/mobile-input";
@@ -62,6 +64,7 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { terminalPreview } from "./lib/terminal/preview";
 import { manageDialogFocus } from "./lib/dialog-focus";
 import { BottomSheet } from "./lib/bottom-sheet";
+import { SettingsDialog } from "./lib/settings-dialog";
 import { scrollFade } from "./lib/scroll-fade";
 import { IconSettings, IconCaretDown, IconKeyboard, IconTerminal } from "./icons";
 import {
@@ -226,6 +229,9 @@ export default function App() {
   const [createWsPath, setCreateWsPath] = createSignal("");
   const [creatingWs, setCreatingWs] = createSignal(false);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
+  // Wide layouts use a collapsible column, not the mobile drawer: keeping
+  // these separate avoids blocking terminal input when the column is open.
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
   const [drawerDragging, setDrawerDragging] = createSignal(false);
   const [drawerX, setDrawerX] = createSignal(0);
   // Right peer page (Terminals): same follow-finger scrub as the left drawer.
@@ -246,6 +252,8 @@ export default function App() {
   const [isMobile, setIsMobile] = createSignal(
     typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
   );
+  const sidebarOpen = () => isMobile() ? drawerOpen() : !sidebarCollapsed();
+  let sidebarToggle: HTMLDivElement | undefined;
   const [expandedIds, setExpandedIds] = createSignal<Record<string, boolean>>({});
   const [createAgentOpen, setCreateAgentOpen] = createSignal(false);
   const [createAgentWsId, setCreateAgentWsId] = createSignal("");
@@ -270,7 +278,9 @@ export default function App() {
   const [listening, setListening] = createSignal(false);
   const [importText, setImportText] = createSignal("");
   const [settingsMsg, setSettingsMsg] = createSignal("");
-  const [exportText, setExportText] = createSignal("");
+  const [transferDialog, setTransferDialog] = createSignal<"import" | "export" | null>(null);
+  const [dialogMsg, setDialogMsg] = createSignal("");
+  const [copyBusy, setCopyBusy] = createSignal(false);
   const [deleteBusy, setDeleteBusy] = createSignal(false);
   const [softKbOpen, setSoftKbOpen] = createSignal(false);
   const [keyboardMode, setKeyboardMode] = createSignal<KeyboardMode>(loadKeyboardMode());
@@ -1139,6 +1149,23 @@ export default function App() {
     setDrawerX(SIDEBAR_W);
   };
 
+  const closeSidebar = () => {
+    if (isMobile()) closeDrawer();
+    else setSidebarCollapsed(true);
+    queueMicrotask(() => sidebarToggle?.querySelector("button")?.focus());
+  };
+
+  const toggleSidebar = () => {
+    if (sidebarOpen()) closeSidebar();
+    else {
+      if (isMobile()) openDrawer();
+      else setSidebarCollapsed(false);
+      queueMicrotask(() => {
+        document.querySelector<HTMLButtonElement>("#workspace-sidebar .sidebar-close-btn")?.focus();
+      });
+    }
+  };
+
   const selectAgent = (id: string) => {
     // An explicit selection wins over any still-pending startup restoration.
     pendingRestore = "";
@@ -1395,7 +1422,8 @@ export default function App() {
     setModMeta(false);
     setListening(false);
     setImportText("");
-    setExportText(exportConfig(cfg));
+    setTransferDialog(null);
+    setDialogMsg("");
     setSettingsMsg("");
     setSettingsTab("general");
     setSettingsOpen(true);
@@ -1407,11 +1435,13 @@ export default function App() {
   };
 
   const closeSettings = () => {
-    setListening(false);
+    cancelEdit();
+    setTransferDialog(null);
     setSettingsOpen(false);
   };
 
   const startEdit = (s: Shortcut) => {
+    cancelEdit();
     setEditingId(s.id);
     setEditLabel(s.label);
     setEditChords(s.chords.map((c) => ({ ...c })));
@@ -1420,6 +1450,7 @@ export default function App() {
   };
 
   const startAdd = () => {
+    cancelEdit();
     const blank = createEmptyShortcut();
     setEditingId(blank.id);
     setEditLabel("");
@@ -1433,6 +1464,11 @@ export default function App() {
     setEditLabel("");
     setEditChords([]);
     setListening(false);
+    setModCtrl(false);
+    setModAlt(false);
+    setModShift(false);
+    setModMeta(false);
+    setDialogMsg("");
   };
 
   const applyMods = (c: KeyChord): KeyChord => ({
@@ -1467,11 +1503,12 @@ export default function App() {
   const saveEdit = () => {
     const chords = editChords();
     if (!chords.length) {
-      setSettingsMsg("Capture at least one key / combination.");
+      setDialogMsg("Choose at least one key or combination.");
       return;
     }
     const label = editLabel().trim() || suggestLabel(chords);
     const id = editingId();
+    const updating = draftShortcuts().some((s) => s.id === id);
     const next: Shortcut = { id, label, chords: chords.map((c) => ({ ...c })) };
     setDraftShortcuts((prev) => {
       const idx = prev.findIndex((s) => s.id === id);
@@ -1483,7 +1520,7 @@ export default function App() {
       return [...prev, next];
     });
     cancelEdit();
-    setSettingsMsg("");
+    setSettingsMsg(`${updating ? "Updated" : "Added"} “${label}”. Save changes to keep it.`);
   };
 
   const removeDraft = (id: string) => {
@@ -1611,7 +1648,6 @@ export default function App() {
   const saveSettings = () => {
     const cfg: ShortcutConfig = { version: 1, shortcuts: draftShortcuts() };
     persistShortcuts(cfg);
-    setExportText(exportConfig(cfg));
     setSettingsMsg("Saved to this browser.");
     cancelEdit();
   };
@@ -1627,23 +1663,35 @@ export default function App() {
     try {
       const cfg = importConfig(importText());
       setDraftShortcuts(cfg.shortcuts.map((s) => ({ ...s, chords: s.chords.map((c) => ({ ...c })) })));
-      setExportText(exportConfig(cfg));
       cancelEdit();
+      setTransferDialog(null);
+      setImportText("");
       setSettingsMsg(`Imported ${cfg.shortcuts.length} shortcut(s). Save to keep.`);
     } catch (e) {
-      setSettingsMsg(e instanceof Error ? e.message : "Import failed");
+      setDialogMsg(e instanceof Error ? e.message : "Import failed");
     }
   };
 
   const copyExport = async () => {
+    if (copyBusy()) return;
+    setCopyBusy(true);
+    setDialogMsg("");
     const text = exportConfig({ version: 1, shortcuts: draftShortcuts() });
-    setExportText(text);
     try {
       await navigator.clipboard.writeText(text);
-      setSettingsMsg("Copied JSON to clipboard.");
+      if (transferDialog() === "export") setDialogMsg("Copied JSON to clipboard.");
     } catch {
-      setSettingsMsg("Copy failed — select the export box and copy manually.");
+      if (transferDialog() === "export") setDialogMsg("Copy failed — select the JSON and copy manually.");
+    } finally {
+      setCopyBusy(false);
     }
+  };
+
+  const openTransfer = (kind: "import" | "export") => {
+    cancelEdit();
+    setImportText("");
+    setDialogMsg("");
+    setTransferDialog(kind);
   };
 
   const fireShortcut = (s: Shortcut) => {
@@ -2446,7 +2494,7 @@ export default function App() {
     const cleanup = manageDialogFocus(panel, () => {
       if (createAgentOpen()) cancelCreateAgent();
       else cancelCreateWorkspace();
-    });
+    }, { focusInput: !isMobile() });
     onCleanup(cleanup);
   });
 
@@ -2514,7 +2562,7 @@ export default function App() {
   );
 
   return (
-    <div class="app">
+    <div class="app" classList={{ "creation-dialog-open": createWsOpen() || createAgentOpen() }}>
       <Show when={authReady() && authRequired()}>
         <div class="auth-overlay" role="dialog" aria-modal="true" aria-label="Password">
           <form class="auth-panel" onSubmit={unlock}>
@@ -2551,13 +2599,20 @@ export default function App() {
         class="shell"
         classList={{
           "drawer-open": drawerOpen(),
+          "sidebar-collapsed": sidebarCollapsed(),
           "right-open": rightOpen(),
           "right-dragging": rightDragging(),
           dragging: drawerDragging() || rightDragging(),
         }}
         style={shellStyle() as Record<string, string> | undefined}
       >
-        <aside class="sidebar" aria-label="Workspaces">
+        <aside
+          id="workspace-sidebar"
+          class="sidebar"
+          aria-label="Workspaces"
+          aria-hidden={!sidebarOpen()}
+          inert={!sidebarOpen()}
+        >
           <div class="sidebar-brand">
             <div class="sidebar-brand-row">
               <img
@@ -2571,6 +2626,7 @@ export default function App() {
                 <div class="sidebar-brand-title">herdr-serve</div>
                 <div class="sidebar-brand-sub">Agent control center</div>
               </div>
+              <SidebarToggle class="sidebar-close-btn" open={sidebarOpen()} onClick={closeSidebar} />
             </div>
           </div>
           <SidebarPanels
@@ -2839,14 +2895,11 @@ export default function App() {
 
         <div class="main main-shift">
           <header class="topbar">
-            <button
-              type="button"
-              class="menu-btn"
-              aria-label="Open sidebar"
-              onClick={() => (drawerOpen() ? closeDrawer() : openDrawer())}
-            >
-              ☰
-            </button>
+            <Show when={!sidebarOpen()}>
+              <div class="sidebar-toggle" ref={sidebarToggle}>
+                <SidebarToggle open={false} onClick={toggleSidebar} />
+              </div>
+            </Show>
             <div class="topbar-title-row">
               <div class="topbar-title">Agents</div>
               <Show when={current()}>
@@ -3042,7 +3095,7 @@ export default function App() {
           class="dialog-panel"
           role="dialog"
           aria-modal="true"
-          aria-label="New workspace"
+          aria-labelledby="new-workspace-title"
           ref={workspaceDialog}
           tabindex="-1"
           onSubmit={(e) => {
@@ -3051,30 +3104,43 @@ export default function App() {
           }}
         >
           <div class="dialog-head">
-            <div class="dialog-title">New workspace</div>
+            <h2 class="dialog-title" id="new-workspace-title">New workspace</h2>
             <button
               type="button"
-              class="sheet-close"
+              class="dialog-close"
+              aria-label="Close new workspace"
+              disabled={creatingWs()}
               onClick={() => cancelCreateWorkspace()}
             >
-              Close
+              <span aria-hidden="true">×</span>
             </button>
           </div>
+          <Show when={error()}>
+            <p class="dialog-error" role="alert">{error()}</p>
+          </Show>
           <label class="field">
-            <span>Label</span>
+            <span>Name <small class="field-optional">Optional</small></span>
             <input
               type="text"
               value={createWsLabel()}
               placeholder="my-project"
+              disabled={creatingWs()}
+              autocapitalize="off"
+              spellcheck={false}
               onInput={(e) => setCreateWsLabel(e.currentTarget.value)}
             />
           </label>
           <label class="field">
-            <span>Path (cwd)</span>
+            <span>Project path</span>
             <input
               type="text"
               value={createWsPath()}
               placeholder="/path/to/project"
+              required
+              disabled={creatingWs()}
+              autocapitalize="off"
+              autocomplete="off"
+              spellcheck={false}
               onInput={(e) => setCreateWsPath(e.currentTarget.value)}
             />
           </label>
@@ -3092,7 +3158,7 @@ export default function App() {
               class="sheet-primary"
               disabled={creatingWs() || !createWsPath().trim()}
             >
-              {creatingWs() ? "Creating…" : "Create"}
+              {creatingWs() ? "Creating…" : "Create workspace"}
             </button>
           </div>
         </form>
@@ -3104,7 +3170,7 @@ export default function App() {
           class="dialog-panel"
           role="dialog"
           aria-modal="true"
-          aria-label="New agent"
+          aria-labelledby="new-agent-title"
           ref={agentDialog}
           tabindex="-1"
           onSubmit={(e) => {
@@ -3113,18 +3179,15 @@ export default function App() {
           }}
         >
           <div class="dialog-head">
-            <div>
-              <div class="dialog-title">New agent</div>
-              <p class="dialog-sub">
-                Pick a provider, choose a workspace, and name your agent.
-              </p>
-            </div>
+            <h2 class="dialog-title" id="new-agent-title">New agent</h2>
             <button
               type="button"
-              class="sheet-close"
+              class="dialog-close"
+              aria-label="Close new agent"
+              disabled={creating()}
               onClick={() => cancelCreateAgent()}
             >
-              Close
+              <span aria-hidden="true">×</span>
             </button>
           </div>
           <Show when={error()}>
@@ -3134,20 +3197,22 @@ export default function App() {
           </Show>
           <label class="field">
             <span>Workspace</span>
-            <select
-              value={createAgentWsId()}
-              disabled={creating()}
-              onFocus={(e) => e.preventDefault()}
-              onChange={(e) => setCreateAgentWsId(e.currentTarget.value)}
-            >
-              <For each={workspaces()}>
-                {(w) => (
-                  <option value={w.workspace_id}>
-                    {w.label || w.workspace_id}
-                  </option>
-                )}
-              </For>
-            </select>
+            <div class="dialog-select">
+              <select
+                value={createAgentWsId()}
+                disabled={creating()}
+                onChange={(e) => setCreateAgentWsId(e.currentTarget.value)}
+              >
+                <For each={workspaces()}>
+                  {(w) => (
+                    <option value={w.workspace_id}>
+                      {w.label || w.workspace_id}
+                    </option>
+                  )}
+                </For>
+              </select>
+              <IconCaretDown class="dialog-select-chevron" />
+            </div>
           </label>
           <div class="field">
             <span>Provider</span>
@@ -3177,12 +3242,14 @@ export default function App() {
             </div>
           </div>
           <label class="field">
-            <span>Label</span>
+            <span>Name</span>
             <input
               type="text"
               value={createLabel()}
               placeholder={createKind()}
               disabled={creating()}
+              autocapitalize="off"
+              spellcheck={false}
               onInput={(e) => setCreateLabel(e.currentTarget.value)}
             />
           </label>
@@ -3301,6 +3368,12 @@ export default function App() {
             copy to another phone.
           </p>
 
+          <div class="shortcut-toolbar">
+            <button type="button" class="sheet-secondary shortcut-add" onClick={() => startAdd()}>+ Add shortcut</button>
+            <button type="button" class="sheet-secondary" onClick={() => openTransfer("import")}>Import…</button>
+            <button type="button" class="sheet-secondary" onClick={() => openTransfer("export")}>Export…</button>
+          </div>
+
           <SortableList
               items={draftShortcuts}
               onReorder={(from, to) => reorderDraft(from, to)}
@@ -3337,15 +3410,42 @@ export default function App() {
               )}
             </SortableList>
 
-          <Show
-            when={editingId()}
-            fallback={
-              <button type="button" class="sheet-secondary" onClick={() => startAdd()}>
-                + Add shortcut
+          <Show when={settingsMsg()}>
+            <div class="settings-msg">{settingsMsg()}</div>
+          </Show>
+
+          <button type="button" class="sheet-secondary settings-reset" onClick={() => resetDefaults()}>
+            Reset defaults
+          </button>
+          </Show>
+          </div>
+
+          <div class="settings-footer" data-corvu-no-drag>
+            <span class="settings-save-note" role="status">{settingsTab() === "general" ? "Saved automatically on this device" : settingsMsg() || "Changes stay on this device"}</span>
+            <Show when={settingsTab() === "shortcuts"}>
+              <button type="button" class="sheet-secondary" onClick={() => closeSettings()}>Cancel</button>
+            </Show>
+            <button type="button" class="sheet-primary" onClick={() => {
+              if (settingsTab() === "shortcuts") saveSettings();
+              closeSettings();
+            }}>
+              {settingsTab() === "general" ? "Done" : "Save changes"}
+            </button>
+          </div>
+          <SettingsDialog
+            open={Boolean(editingId())}
+            onOpenChange={(open) => { if (!open) cancelEdit(); }}
+            title={draftShortcuts().some((s) => s.id === editingId()) ? "Edit shortcut" : "Add shortcut"}
+            description="Choose a key or build a sequence for your shortcut bar."
+            footer={<>
+              <Show when={dialogMsg()}><p class="settings-dialog-message is-error" role="alert">{dialogMsg()}</p></Show>
+              <span class="settings-dialog-note">{editChords().length ? formatChords(editChords()) : "Choose a key to continue"}</span>
+              <button type="button" class="sheet-secondary" onClick={() => cancelEdit()}>Cancel</button>
+              <button type="button" class="sheet-primary" disabled={!editChords().length} onClick={() => saveEdit()}>
+                {draftShortcuts().some((s) => s.id === editingId()) ? "Update shortcut" : "Add shortcut"}
               </button>
-            }
+            </>}
           >
-            <div class="editor">
               <label class="field">
                 <span>Button label</span>
                 <input
@@ -3357,45 +3457,7 @@ export default function App() {
               </label>
 
               <div class="field">
-                <span>Modifiers (sticky for next key)</span>
-                <div class="mod-row">
-                  <button
-                    type="button"
-                    class="mod"
-                    classList={{ active: modCtrl() }}
-                    onClick={() => setModCtrl((v) => !v)}
-                  >
-                    Ctrl
-                  </button>
-                  <button
-                    type="button"
-                    class="mod"
-                    classList={{ active: modAlt() }}
-                    onClick={() => setModAlt((v) => !v)}
-                  >
-                    Alt
-                  </button>
-                  <button
-                    type="button"
-                    class="mod"
-                    classList={{ active: modShift() }}
-                    onClick={() => setModShift((v) => !v)}
-                  >
-                    Shift
-                  </button>
-                  <button
-                    type="button"
-                    class="mod"
-                    classList={{ active: modMeta() }}
-                    onClick={() => setModMeta((v) => !v)}
-                  >
-                    Meta
-                  </button>
-                </div>
-              </div>
-
-              <div class="field">
-                <span>Sequence</span>
+                <span>Key sequence</span>
                 <div class="chord-chips">
                   <For each={editChords()}>
                     {(c, i) => (
@@ -3414,6 +3476,48 @@ export default function App() {
                   <Show when={!editChords().length}>
                     <span class="muted-inline">No keys yet</span>
                   </Show>
+                </div>
+              </div>
+
+              <div class="field">
+                <span>Modifiers for the next key</span>
+                <div class="mod-row">
+                  <button
+                    type="button"
+                    class="mod"
+                    classList={{ active: modCtrl() }}
+                    aria-pressed={modCtrl()}
+                    onClick={() => setModCtrl((v) => !v)}
+                  >
+                    Ctrl
+                  </button>
+                  <button
+                    type="button"
+                    class="mod"
+                    classList={{ active: modAlt() }}
+                    aria-pressed={modAlt()}
+                    onClick={() => setModAlt((v) => !v)}
+                  >
+                    Alt
+                  </button>
+                  <button
+                    type="button"
+                    class="mod"
+                    classList={{ active: modShift() }}
+                    aria-pressed={modShift()}
+                    onClick={() => setModShift((v) => !v)}
+                  >
+                    Shift
+                  </button>
+                  <button
+                    type="button"
+                    class="mod"
+                    classList={{ active: modMeta() }}
+                    aria-pressed={modMeta()}
+                    onClick={() => setModMeta((v) => !v)}
+                  >
+                    Meta
+                  </button>
                 </div>
               </div>
 
@@ -3442,127 +3546,49 @@ export default function App() {
                   aria-label="Key capture"
                   value=""
                   onKeyDown={onListenKey}
-                  onBlur={() => {
-                    // Keep listening flag until a chord is captured or cancelled
-                  }}
+                  onBlur={() => setListening(false)}
                 />
-                <div class="quick-keys">
-                  <For
-                    each={[
-                      "Escape",
-                      "Enter",
-                      "Tab",
-                      "Backspace",
-                      "ArrowUp",
-                      "ArrowDown",
-                      "ArrowLeft",
-                      "ArrowRight",
-                    ]}
-                  >
-                    {(k) => (
-                      <button
-                        type="button"
-                        class="mini"
-                        onClick={() => addChord({ key: k })}
-                      >
-                        {formatChord({ key: k })}
-                      </button>
-                    )}
-                  </For>
-                </div>
-                <div class="letter-grid" aria-label="Letters and digits">
-                  <For
-                    each={"abcdefghijklmnopqrstuvwxyz0123456789".split("")}
-                  >
-                    {(k) => (
-                      <button
-                        type="button"
-                        class="mini letter"
-                        onClick={() => addChord({ key: k })}
-                      >
-                        {k.toUpperCase()}
-                      </button>
-                    )}
-                  </For>
-                  <For each={["[", "]", "\\", "-", "=", "/", "?", " "]}>
-                    {(k) => (
-                      <button
-                        type="button"
-                        class="mini letter"
-                        onClick={() => addChord({ key: k })}
-                      >
-                        {k === " " ? "Spc" : k}
-                      </button>
-                    )}
-                  </For>
-                </div>
+                <ShortcutKeyboard onKey={(key) => addChord({ key })} />
               </div>
 
               <p class="sheet-help tight">
                 Tip: for Ctrl+X then M, listen (or sticky Ctrl + X), then listen again for M.
               </p>
 
-              <div class="editor-actions">
-                <button type="button" class="sheet-secondary" onClick={() => cancelEdit()}>
-                  Cancel
-                </button>
-                <button type="button" class="sheet-primary" onClick={() => saveEdit()}>
-                  Apply
-                </button>
-              </div>
-            </div>
-          </Show>
+          </SettingsDialog>
 
-          <Show when={settingsMsg()}>
-            <div class="settings-msg">{settingsMsg()}</div>
-          </Show>
-
-          <details class="io">
-            <summary>Import / Export</summary>
-            <label class="field">
-              <span>Export JSON</span>
-              <textarea
-                rows={5}
-                readonly
-                value={exportText() || exportConfig({ version: 1, shortcuts: draftShortcuts() })}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-              <button type="button" class="sheet-secondary" onClick={() => void copyExport()}>
-                Copy JSON
+          <SettingsDialog
+            open={transferDialog() !== null}
+            onOpenChange={(open) => { if (!open) { setTransferDialog(null); setDialogMsg(""); } }}
+            title={transferDialog() === "import" ? "Import shortcuts" : "Export shortcuts"}
+            description={transferDialog() === "import" ? "Replace the current shortcut list with a configuration from another device." : "Copy your current shortcut list, including unsaved changes, to another device."}
+            footer={<>
+              <Show when={dialogMsg()}>
+                <p class="settings-dialog-message" classList={{ "is-error": transferDialog() === "import" }} role={transferDialog() === "import" ? "alert" : "status"}>{dialogMsg()}</p>
+              </Show>
+              <span class="settings-dialog-note">{transferDialog() === "import" ? "Save changes afterward to keep the imported list." : `${draftShortcuts().length} shortcuts · JSON format`}</span>
+              <button type="button" class="sheet-secondary" onClick={() => { setTransferDialog(null); setDialogMsg(""); }}>
+                {transferDialog() === "import" ? "Cancel" : "Done"}
               </button>
-            </label>
-            <label class="field">
-              <span>Import JSON</span>
-              <textarea
-                rows={5}
-                value={importText()}
-                placeholder='{"version":1,"shortcuts":[...]}'
-                onInput={(e) => setImportText(e.currentTarget.value)}
-              />
-              <button type="button" class="sheet-secondary" onClick={() => doImport()}>
-                Import
-              </button>
-            </label>
-          </details>
-
-          <button type="button" class="sheet-secondary settings-reset" onClick={() => resetDefaults()}>
-            Reset defaults
-          </button>
-          </Show>
-          </div>
-
-          <div class="settings-footer" data-corvu-no-drag>
-            <span class="settings-save-note" role="status">{settingsTab() === "general" ? "Saved automatically on this device" : settingsMsg() || "Changes stay on this device"}</span>
-            <Show when={settingsTab() === "shortcuts"}>
-              <button type="button" class="sheet-secondary" onClick={() => closeSettings()}>Cancel</button>
+              <Show when={transferDialog() === "import"} fallback={
+                <button type="button" class="sheet-primary" disabled={copyBusy()} onClick={() => void copyExport()}>{copyBusy() ? "Copying…" : "Copy JSON"}</button>
+              }>
+                <button type="button" class="sheet-primary" disabled={!importText().trim()} onClick={() => doImport()}>Import shortcuts</button>
+              </Show>
+            </>}
+          >
+            <Show when={transferDialog() === "import"} fallback={
+              <label class="field">
+                <span>Shortcut configuration</span>
+                <textarea class="settings-json" rows={10} readonly value={exportConfig({ version: 1, shortcuts: draftShortcuts() })} onFocus={(e) => e.currentTarget.select()} />
+              </label>
+            }>
+              <label class="field">
+                <span>Paste shortcut JSON</span>
+                <textarea class="settings-json" rows={10} value={importText()} placeholder='{"version":1,"shortcuts":[...]}' onInput={(e) => { setImportText(e.currentTarget.value); setDialogMsg(""); }} />
+              </label>
             </Show>
-            <button type="button" class="sheet-primary" onClick={() => {
-              if (settingsTab() === "shortcuts") saveSettings();
-              closeSettings();
-            }}>
-              {settingsTab() === "general" ? "Done" : "Save changes"}
-            </button>
-          </div>
+          </SettingsDialog>
       </BottomSheet>
       <ContextMenuHost />
     </div>

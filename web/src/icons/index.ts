@@ -9,3 +9,4 @@ export { default as IconMic } from './f7_mic';
 export { default as IconKeyboard } from './Keyboard';
 export { default as IconTerminal } from './Terminal';
 export { default as IconImages } from './lucide_images';
+export { default as IconSidebarPanel } from './lucide_panel-left';

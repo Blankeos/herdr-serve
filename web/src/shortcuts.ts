@@ -28,7 +28,7 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
   { id: "ctrl-c", label: "Ctrl+C", chords: [{ ctrl: true, key: "c" }] },
   { id: "ctrl-d", label: "Ctrl+D", chords: [{ ctrl: true, key: "d" }] },
   { id: "esc", label: "Esc", chords: [{ key: "Escape" }] },
-  { id: "enter", label: "Enter", chords: [{ key: "Enter" }] },
+  { id: "shift-enter", label: "Shift+Enter", chords: [{ shift: true, key: "Enter" }] },
   { id: "up", label: "↑", chords: [{ key: "ArrowUp" }] },
   { id: "down", label: "↓", chords: [{ key: "ArrowDown" }] },
   { id: "left", label: "←", chords: [{ key: "ArrowLeft" }] },
@@ -227,7 +227,8 @@ export function chordToBytes(c: KeyChord): string {
 
   switch (key) {
     case "Enter":
-      return "\r";
+      // CSI-u distinguishes Shift+Enter from Return for multiline TUI input.
+      return c.shift ? "\x1b[13;2u" : "\r";
     case "Tab":
       return c.shift ? "\x1b[Z" : "\t";
     case "Escape":

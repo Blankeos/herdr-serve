@@ -1,0 +1,45 @@
+.shortcut-keyboard-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px 2px 9px;
+  scrollbar-width: thin;
+  scrollbar-color: #555 transparent;
+}
+.shortcut-keyboard {
+  min-width: 440px;
+  padding: 10px;
+  border: 1px solid #444;
+  border-radius: 10px;
+  background: #222;
+}
+.shortcut-keyboard-row { display: flex; gap: 4px; margin-bottom: 5px; }
+.shortcut-keyboard-utility { margin-bottom: 10px; }
+.shortcut-keyboard-gap { flex: 1; }
+.shortcut-keycap, .shortcut-keyboard-spacer {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  height: 33px;
+  padding: 0 2px;
+  border: 1px solid #505050;
+  border-bottom: 3px solid #151515;
+  border-radius: 5px;
+  background: #383838;
+  color: #e1e1e1;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 #ffffff0a;
+}
+.shortcut-keycap { cursor: pointer; transition: background 120ms, border-color 120ms, transform 120ms; }
+.shortcut-keycap:hover { background: #474747; border-top-color: #777; }
+.shortcut-keycap:active { transform: translateY(2px); border-bottom-width: 1px; background: #465269; }
+.shortcut-keycap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.shortcut-keyboard-spacer { color: #777; background: #2c2c2c; border-color: #393939; border-bottom-color: #1a1a1a; }
+.shortcut-keyboard-bottom { display: flex; align-items: flex-end; gap: 4px; }
+.shortcut-keyboard-bottom > .shortcut-keycap { height: 33px; }
+.shortcut-keyboard-arrows { flex: 3; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+.shortcut-keyboard-arrows .shortcut-keycap { height: 22px; font-size: 13px; }
+.shortcut-keyboard-arrows .shortcut-keycap:first-child { grid-column: 2; }
+.shortcut-keyboard-arrows .shortcut-keycap:nth-child(2) { grid-column: 1; }
+@media (prefers-reduced-motion: reduce) { .shortcut-keycap { transition: none; } }
