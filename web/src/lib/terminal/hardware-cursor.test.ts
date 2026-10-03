@@ -55,7 +55,7 @@ describe("hardware caret in unfocused frame streams", () => {
 
     expect(cursorState(term).isCursorInitialized).toBe(true);
     expect(cursorState(term).isCursorHidden).toBe(true);
-    expect(term.buffer.active.type).toBe("normal");
+    expect(term.buffer.active.type).toBe("alternate");
     expect(term.buffer.active.cursorX).toBe(0);
     expect(term.buffer.active.cursorY).toBe(0);
     expect(term.options.cursorInactiveStyle).toBe("block");
@@ -99,5 +99,21 @@ describe("hardware caret in unfocused frame streams", () => {
     markHardwareCursorHost(host);
     expect(host.classList.contains("hw-cursor-visible")).toBe(true);
     expect(() => markHardwareCursorHost(undefined)).not.toThrow();
+  });
+
+  it("does not reflow painted frames into local history after sidebar resizing", async () => {
+    const term = setup();
+    keepHardwareCursorVisible(term);
+    const paint = () => frame(4, 1, true, Array.from({ length: 4 }, (_, i) =>
+      `\x1b[${i + 1};1H${String(i).repeat(term.cols)}`).join(""));
+    await write(term, paint());
+    for (const [cols, rows] of [[40, 4], [20, 3], [40, 4], [20, 4]]) {
+      term.resize(cols, rows);
+      await write(term, paint());
+      expect(term.buffer.active.type).toBe("alternate");
+      expect(term.buffer.active.baseY).toBe(0);
+      expect(term.buffer.active.viewportY).toBe(0);
+      expect(term.buffer.active.length).toBe(rows);
+    }
   });
 });

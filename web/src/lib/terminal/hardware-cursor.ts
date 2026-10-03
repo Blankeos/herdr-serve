@@ -11,8 +11,10 @@ export const HARDWARE_CURSOR_COLOR = "#6c8ed8";
  * initialize the cursor: that normally happens on focus or keyboard input.
  * Mobile deliberately does neither when using our soft keyboard.
  *
- * Enter/leave a blank alternate buffer to initialize it through supported VT
- * sequences, without focusing the textarea (which would open the native IME).
+ * Enter an alternate buffer to initialize it through supported VT sequences,
+ * without focusing the textarea (which would open the native IME). Stay there:
+ * painted frames must not reflow into local scrollback when the sidebar resizes
+ * the screen. The relay owns shell/TUI history and receives scroll input.
  * Keep it hidden until Herder supplies the first frame's position/visibility.
  * This must NOT run again after frames arrive: it clears the alternate buffer.
  */
@@ -20,7 +22,7 @@ export function keepHardwareCursorVisible(term: Terminal): void {
   term.options.cursorStyle = "block";
   term.options.cursorInactiveStyle = "block";
   term.options.cursorBlink = true;
-  term.write("\x1b[?1047h\x1b[?1047l\x1b[?25l");
+  term.write("\x1b[?1047h\x1b[?25l");
 }
 
 /** Tag the terminal host so the CSS fallback can target it explicitly. */

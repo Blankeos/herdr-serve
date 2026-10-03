@@ -62,6 +62,8 @@ import { loadSelectedTerminal, saveSelectedTerminal, resolveInitialTerminal } fr
 import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { terminalPreview } from "./lib/terminal/preview";
+import { createTerminalFitter, observeTerminalFit } from "./lib/terminal/fit";
+import { createRelayWheelHandler } from "./lib/terminal/wheel";
 import { manageDialogFocus } from "./lib/dialog-focus";
 import { BottomSheet } from "./lib/bottom-sheet";
 import { SettingsDialog } from "./lib/settings-dialog";
@@ -400,6 +402,7 @@ export default function App() {
     direction: "up" | "down",
     lines: number,
     source: "wheel" | "page_key" | "scrollbar" = "wheel",
+    cell?: { col: number; row: number },
   ) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const n = Math.max(1, Math.abs(Math.trunc(lines)));
@@ -409,6 +412,7 @@ export default function App() {
         direction,
         lines: n,
         source,
+        ...(cell ? { column: cell.col, row: cell.row } : {}),
       }),
     );
   };
@@ -491,7 +495,7 @@ export default function App() {
       sendBytes(encodeSgrWheelLines(direction, col, row, n));
       return;
     }
-    sendHostScroll(direction, n, "wheel");
+    sendHostScroll(direction, n, "wheel", cellAt(clientX, clientY));
   };
 
   const disconnect = () => {
@@ -1824,28 +1828,9 @@ export default function App() {
     saveKeyboardMode(mode);
   };
 
-  let lastSentCols = 0;
-  let lastSentRows = 0;
-  let lastHostW = 0;
-  let lastHostH = 0;
+  let fitTerminal: (() => void) | undefined;
   const refit = () => {
-    if (!term || !termHost) return;
-    const rect = termHost.getBoundingClientRect();
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
-    // visualViewport scroll/resize fires constantly on mobile; skip no-op fits
-    // because fitAddon.fit() itself re-renders the terminal canvas.
-    if (w === lastHostW && h === lastHostH && lastSentCols > 0) return;
-    lastHostW = w;
-    lastHostH = h;
-    fit?.fit();
-    const cols = term.cols;
-    const rows = term.rows;
-    // Skip no-op resizes — herdr/tmux redraws the whole TUI on every resize.
-    if (cols === lastSentCols && rows === lastSentRows) return;
-    lastSentCols = cols;
-    lastSentRows = rows;
-    sendResize(cols, rows);
+    fitTerminal?.();
   };
 
   onMount(() => {
@@ -1877,6 +1862,7 @@ export default function App() {
     fit = new FitAddon();
     term.loadAddon(fit);
     term.open(termHost!);
+    fitTerminal = createTerminalFitter(term, fit, sendResize);
     markHardwareCursorHost(termHost);
     keepHardwareCursorVisible(term);
     prepareTerminalInput(term.textarea!, isMobile() ? keyboardMode() : "native");
@@ -1900,17 +1886,10 @@ export default function App() {
 
     // Desktop / trackpad wheel → sendScroll (mouse reports / keys / host).
     // Always handle when connected so Claude/opencode mouse mode still scrolls.
-    let wheelAcc = 0;
-    term.attachCustomWheelEventHandler((ev) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-      ev.preventDefault();
-      wheelAcc += ev.deltaY;
-      const line = Math.sign(wheelAcc) * Math.floor(Math.abs(wheelAcc) / 40);
-      if (line === 0) return true;
-      wheelAcc -= line * 40;
-      sendScroll(line < 0 ? "up" : "down", Math.abs(line), ev.clientX, ev.clientY);
-      return true;
-    });
+    term.attachCustomWheelEventHandler(createRelayWheelHandler(
+      () => socket?.readyState === WebSocket.OPEN,
+      sendScroll,
+    ));
 
     // Touch: intentional vertical drag → scroll; otherwise → SGR click.
     // Simulated keyboard opens only via the toolbar; native input also opens on tap.
@@ -2141,8 +2120,7 @@ export default function App() {
       setNativeKbOpen(open);
       refit();
     });
-    const hostResizeObserver = new ResizeObserver(() => refit());
-    hostResizeObserver.observe(termHost!);
+    const stopTerminalFit = observeTerminalFit(termHost!, refit);
     const onResize = () => refit();
     window.addEventListener("resize", onResize);
 
@@ -2387,7 +2365,7 @@ export default function App() {
       stopNativeReplacement();
       stopNativeBackspace();
       stopViewportTracking();
-      hostResizeObserver.disconnect();
+      stopTerminalFit();
       termHost?.removeEventListener("touchstart", onTouchStart);
       termHost?.removeEventListener("touchmove", onTouchMove);
       termHost?.removeEventListener("touchend", onTouchEnd);
@@ -2435,8 +2413,6 @@ export default function App() {
     // Soft keyboard is in-flow — reflow xterm when it opens/closes.
     softKbOpen();
     queueMicrotask(() => {
-      lastHostW = 0;
-      lastHostH = 0;
       refit();
     });
   });
