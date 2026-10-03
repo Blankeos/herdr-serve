@@ -44,7 +44,9 @@ Defaults already bind `0.0.0.0` and print a LAN QR. Wizard: network / tunnel / l
 
 - Live PTY via `herdr terminal session control --takeover`
 - xterm.js on the phone (full ANSI / truecolor)
-- Native / hardware keyboard → selected agent pane
+- Native / hardware keyboard → selected agent pane (native is the mobile default; tap the terminal or keyboard button)
+- Settings → General → Mobile keyboard switches to the simulated keyboard; saved automatically per browser
+- Mobile layout follows the visible viewport and Safari pan offset to keep the shortcut bar above the native keyboard (iOS can still report keyboard geometry late)
 - Footer shortcut bar (Ctrl+C, Esc, arrows, …) — settings ⚙, localStorage + JSON import/export
 - Create agents from the phone UI
 - No Herder plugin required — companion CLI works alone

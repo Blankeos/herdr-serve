@@ -47,6 +47,12 @@ import {
   suggestLabel,
 } from "./shortcuts";
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
+import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "./keyboardPrefs";
+import { trackMobileViewport } from "./lib/mobile-viewport";
+import { prepareTerminalInput } from "./lib/terminal/mobile-input";
+import { installNativeBackspace } from "./lib/terminal/native-backspace";
+import { createNativePaste, pasteClipboardText } from "./lib/terminal/clipboard";
+import { createKeyboardDiagnostics } from "./lib/terminal/keyboard-diagnostics";
 import { loadSelectedTerminal, saveSelectedTerminal, resolveInitialTerminal } from "./terminalSelection";
 import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -192,28 +198,6 @@ function mouseTrackingOn(term: Terminal | undefined): boolean {
   return Boolean(proto && proto !== "NONE");
 }
 
-function prepareMobileInput(term: Terminal) {
-  const ta = term.textarea;
-  if (!ta) return;
-  ta.setAttribute("autocomplete", "off");
-  ta.setAttribute("autocorrect", "off");
-  ta.setAttribute("autocapitalize", "none");
-  ta.setAttribute("spellcheck", "false");
-  ta.setAttribute("enterkeyhint", "enter");
-  ta.setAttribute("inputmode", "none");
-  ta.setAttribute("readonly", "true");
-  // Soft keyboard owns mobile input — never open the native IME.
-  // Keep the helper textarea out of the mouse hit path so wheel /
-  // scrollbar / TUI mouse clicks reach the canvas.
-  ta.style.left = "-9999px";
-  ta.style.top = "0";
-  ta.style.width = "0";
-  ta.style.height = "0";
-  ta.style.opacity = "0";
-  ta.style.caretColor = "transparent";
-  ta.style.pointerEvents = "none";
-}
-
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [selected, setSelectedSignal] = createSignal(""); // terminal_id
@@ -284,6 +268,10 @@ export default function App() {
   const [exportText, setExportText] = createSignal("");
   const [deleteBusy, setDeleteBusy] = createSignal(false);
   const [softKbOpen, setSoftKbOpen] = createSignal(false);
+  const [keyboardMode, setKeyboardMode] = createSignal<KeyboardMode>(loadKeyboardMode());
+  const [nativeKbOpen, setNativeKbOpen] = createSignal(false);
+  let nativePaste: ReturnType<typeof createNativePaste> | undefined;
+  let keyboardDiagnostics: ReturnType<typeof createKeyboardDiagnostics> | undefined;
   const [micActive, setMicActive] = createSignal(false);
   const [authRequired, setAuthRequired] = createSignal(false);
   const [authReady, setAuthReady] = createSignal(false);
@@ -1673,14 +1661,19 @@ export default function App() {
     enqueueTerminalInput("\r");
   };
 
-  const softPaste = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) softInsert(text);
-    } catch {
-      setError("Clipboard paste blocked — allow paste permission");
-      window.setTimeout(() => setError(""), 2500);
-    }
+  const softPaste = () => {
+    if (!selected()) return;
+    const target = selected();
+    const send = (text: string) => { if (selected() === target) softInsert(text); };
+    return pasteClipboardText(
+      send,
+      () => nativePaste?.request(send) ?? false,
+      () => {
+        if (selected() !== target) return;
+        setError("Browser blocked native Paste. Allow clipboard access or use an HTTPS connection.");
+        window.setTimeout(() => setError(""), 5000);
+      },
+    );
   };
 
   const softMicToggle = () => {
@@ -1748,6 +1741,38 @@ export default function App() {
     dictation?.stop();
   };
 
+  const openKeyboard = () => {
+    if (!isMobile() || !selected()) return;
+    if (keyboardMode() === "simulated") {
+      openSoftKeyboard();
+    } else {
+      // Must remain synchronous inside the user gesture for iOS to show IME.
+      term?.textarea?.focus({ preventScroll: true });
+    }
+  };
+
+  const closeKeyboard = () => {
+    closeSoftKeyboard();
+    term?.blur();
+    setNativeKbOpen(false);
+  };
+
+  const keyboardOpen = () => keyboardMode() === "simulated" ? softKbOpen() : nativeKbOpen();
+
+  const keepNativeKeyboardFocus = (event: PointerEvent) => {
+    if (isMobile() && keyboardMode() === "native" && document.activeElement === term?.textarea
+      && (event.target as Element).closest("button")) {
+      // Shortcuts still receive click, but don't blur xterm and dismiss IME.
+      event.preventDefault();
+    }
+  };
+
+  const updateKeyboardMode = (mode: KeyboardMode) => {
+    closeKeyboard();
+    setKeyboardMode(mode);
+    saveKeyboardMode(mode);
+  };
+
   let lastSentCols = 0;
   let lastSentRows = 0;
   let lastHostW = 0;
@@ -1803,12 +1828,19 @@ export default function App() {
     term.open(termHost!);
     markHardwareCursorHost(termHost);
     keepHardwareCursorVisible(term);
-    prepareMobileInput(term);
+    prepareTerminalInput(term.textarea!, isMobile() ? keyboardMode() : "native");
     fit.fit();
     setTermReady(true);
 
     // Native / Bluetooth keyboard → PTY
     term.onData((data) => sendRaw(data));
+    nativePaste = createNativePaste(termHost!);
+    keyboardDiagnostics = createKeyboardDiagnostics(term.textarea!);
+    const stopNativeBackspace = installNativeBackspace(
+      term.textarea!,
+      () => isMobile() && keyboardMode() === "native",
+      sendRaw,
+    );
 
     // Desktop / trackpad wheel → sendScroll (mouse reports / keys / host).
     // Always handle when connected so Claude/opencode mouse mode still scrolls.
@@ -1825,7 +1857,7 @@ export default function App() {
     });
 
     // Touch: intentional vertical drag → scroll; otherwise → SGR click.
-    // Soft keyboard opens only via the toolbar shortcut — never on tap.
+    // Simulated keyboard opens only via the toolbar; native input also opens on tap.
     // Finger jitter (~10–20px) must NOT count as scroll or clicks get eaten.
     // Fast swipe → momentum (macOS-like fling) after finger-up.
     type TouchMeta = {
@@ -2009,6 +2041,9 @@ export default function App() {
       if (drawerOpen() || swipeLock || rightDragging()) return;
       if (sendMouseClick(x, y)) {
         ev.preventDefault();
+      }
+      if (isMobile() && keyboardMode() === "native") {
+        openKeyboard();
       } else if (!isMobile()) {
         term?.focus();
       }
@@ -2023,6 +2058,7 @@ export default function App() {
         if (performance.now() < ignoreMouseUntil) return;
         if (!drawerOpen() && !suppressClickFocus) {
           sendMouseClick(ev.clientX, ev.clientY);
+          if (keyboardMode() === "native") openKeyboard();
         }
         return;
       }
@@ -2045,10 +2081,14 @@ export default function App() {
     termHost!.addEventListener("touchcancel", onTouchCancel, { passive: true });
     termHost!.addEventListener("mouseup", onMouseUp);
 
+    const stopViewportTracking = trackMobileViewport((open) => {
+      setNativeKbOpen(open);
+      refit();
+    });
+    const hostResizeObserver = new ResizeObserver(() => refit());
+    hostResizeObserver.observe(termHost!);
     const onResize = () => refit();
     window.addEventListener("resize", onResize);
-    window.visualViewport?.addEventListener("resize", onResize);
-    window.visualViewport?.addEventListener("scroll", onResize);
 
     void bootstrapAuth().then(() => {
       if (!authRequired()) {
@@ -2228,7 +2268,7 @@ export default function App() {
       },
     );
 
-    // Vertical swipe on the keybar/dock toggles the soft keyboard.
+    // Vertical swipe on the keybar/dock toggles the selected keyboard.
     // Only fires when vertical movement dominates so horizontal chip scroll still works.
     const KEYBAR_SWIPE = 40;
     const keybarGesture = dockEl
@@ -2253,9 +2293,9 @@ export default function App() {
             const flickDown = vy > 0.35 && dy > 0;
             const flickUp = vy > 0.35 && dy < 0;
             if (flickDown || my >= KEYBAR_SWIPE) {
-              closeSoftKeyboard();
+              closeKeyboard();
             } else if (flickUp || my <= -KEYBAR_SWIPE) {
-              openSoftKeyboard();
+              openKeyboard();
             }
           },
           {
@@ -2289,8 +2329,11 @@ export default function App() {
       document.removeEventListener("gesturestart", blockGesture);
       document.removeEventListener("gesturechange", blockGesture);
       window.removeEventListener("resize", onResize);
-      window.visualViewport?.removeEventListener("resize", onResize);
-      window.visualViewport?.removeEventListener("scroll", onResize);
+      nativePaste?.dispose();
+      keyboardDiagnostics?.stop();
+      stopNativeBackspace();
+      stopViewportTracking();
+      hostResizeObserver.disconnect();
       termHost?.removeEventListener("touchstart", onTouchStart);
       termHost?.removeEventListener("touchmove", onTouchMove);
       termHost?.removeEventListener("touchend", onTouchEnd);
@@ -2303,6 +2346,14 @@ export default function App() {
 
   // Soft keyboard stays open across Sidebar ↔ Agents ↔ Terminals.
   // (Only desktop resize / explicit dismiss closes it.)
+
+  createEffect(() => {
+    const mode = keyboardMode();
+    const mobile = isMobile();
+    if (termReady() && term?.textarea) {
+      prepareTerminalInput(term.textarea, mobile ? mode : "native");
+    }
+  });
 
   createEffect(() => {
     // Terminals chrome reserves top padding — refit so TUIs see the new rows.
@@ -2872,17 +2923,19 @@ export default function App() {
             </Show>
           </div>
 
-          <nav class="dock" aria-label="Shortcut keys" ref={dockEl}>
+          <nav class="dock" aria-label="Shortcut keys" ref={dockEl} onPointerDown={keepNativeKeyboardFocus}>
             <div class="keybar-scroll">
               <Show when={isMobile()}>
                 <button
                   type="button"
                   class="keychip keychip-icon"
-                  classList={{ active: softKbOpen() }}
+                  classList={{ active: keyboardOpen() }}
                   title="Toggle on-screen keyboard"
                   aria-label="Toggle on-screen keyboard"
+                  aria-pressed={keyboardOpen()}
+                  disabled={!selected()}
                   onClick={() =>
-                    softKbOpen() ? closeSoftKeyboard() : openSoftKeyboard()
+                    keyboardOpen() ? closeKeyboard() : openKeyboard()
                   }
                 >
                   <IconKeyboard class="keychip-svg" />
@@ -2964,7 +3017,7 @@ export default function App() {
           </nav>
 
           <SoftKeyboard
-            open={softKbOpen()}
+            open={keyboardMode() === "simulated" && softKbOpen()}
             micActive={micActive()}
             onInsert={softInsert}
             onBackspace={softBackspace}
@@ -3180,6 +3233,21 @@ export default function App() {
           <Show when={settingsTab() === "general"}>
             <div class="settings-general">
               <label class="field">
+                <span>Mobile keyboard</span>
+                <select
+                  value={keyboardMode()}
+                  onChange={(e) => updateKeyboardMode(e.currentTarget.value as KeyboardMode)}
+                >
+                  <option value="native">Native (default)</option>
+                  <option value="simulated">Simulated on-screen keyboard</option>
+                </select>
+              </label>
+              <p class="sheet-help">
+                Native uses your phone’s keyboard. Tap the terminal or keyboard button to type;
+                shortcut keys stay above it. Choose simulated to use the built-in keyboard instead.
+                Saved automatically to this browser.
+              </p>
+              <label class="field">
                 <span>Scroll mode</span>
                 <select
                   value={scrollMode()}
@@ -3196,6 +3264,18 @@ export default function App() {
                 otherwise falls back to host scrollback. Mouse reports and key chords always
                 send those inputs; host always scrolls the terminal buffer.
               </p>
+              <Show when={isMobile()}>
+                <details>
+                  <summary>Keyboard diagnostics</summary>
+                  <p class="sheet-help">Records event types and input geometry for 20 seconds locally, never your text or clipboard. Record, hold Backspace in the terminal, then return here to download the trace.</p>
+                  <button type="button" class="sheet-secondary" disabled={!selected()} onClick={() => {
+                    keyboardDiagnostics?.start();
+                    closeSettings();
+                    openKeyboard();
+                  }}>Record keyboard events</button>
+                  <button type="button" class="sheet-secondary" onClick={() => keyboardDiagnostics?.download()}>Download keyboard trace</button>
+                </details>
+              </Show>
               <PushSettings />
             </div>
           </Show>
