@@ -51,6 +51,7 @@ import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "./keyboar
 import { trackMobileViewport } from "./lib/mobile-viewport";
 import { prepareTerminalInput } from "./lib/terminal/mobile-input";
 import { installNativeBackspace } from "./lib/terminal/native-backspace";
+import { installNativeReplacement } from "./lib/terminal/native-replacement";
 import { createNativePaste, pasteClipboardText } from "./lib/terminal/clipboard";
 import { createKeyboardDiagnostics } from "./lib/terminal/keyboard-diagnostics";
 import { loadSelectedTerminal, saveSelectedTerminal, resolveInitialTerminal } from "./terminalSelection";
@@ -1584,6 +1585,7 @@ export default function App() {
     {
       label: "Delete agent",
       danger: true,
+      disabled: deleteBusy(),
       onSelect: () => void deleteAgent(a),
     },
   ];
@@ -1601,6 +1603,7 @@ export default function App() {
     {
       label: "Delete terminal",
       danger: true,
+      disabled: deleteBusy(),
       onSelect: () => void deleteShell(p),
     },
   ];
@@ -1836,6 +1839,11 @@ export default function App() {
     term.onData((data) => sendRaw(data));
     nativePaste = createNativePaste(termHost!);
     keyboardDiagnostics = createKeyboardDiagnostics(term.textarea!);
+    const stopNativeReplacement = installNativeReplacement(
+      term.textarea!,
+      () => !isMobile() || keyboardMode() === "native",
+      sendRaw,
+    );
     const stopNativeBackspace = installNativeBackspace(
       term.textarea!,
       () => isMobile() && keyboardMode() === "native",
@@ -2331,6 +2339,7 @@ export default function App() {
       window.removeEventListener("resize", onResize);
       nativePaste?.dispose();
       keyboardDiagnostics?.stop();
+      stopNativeReplacement();
       stopNativeBackspace();
       stopViewportTracking();
       hostResizeObserver.disconnect();
@@ -2468,18 +2477,13 @@ export default function App() {
         <For each={focusedShells()}>
           {(p) => {
             const id = agentId(p);
-            const menu = contextMenuBind(() => shellMenu(p));
+            const menu = contextMenuBind(() => shellMenu(p), () => selectShell(p));
             return (
               <button
                 type="button"
                 class="term-chip"
                 classList={{ active: id === selected() }}
-                onClick={() => selectShell(p)}
-                onContextMenu={menu.onContextMenu}
-                onTouchStart={menu.onTouchStart}
-                onTouchMove={menu.onTouchMove}
-                onTouchEnd={menu.onTouchEnd}
-                onTouchCancel={menu.onTouchCancel}
+                {...menu}
               >
                 {shellLabel(p)}
               </button>
@@ -2577,7 +2581,7 @@ export default function App() {
                 const open = () => !!expandedIds()[g.id];
                 const wsMenu =
                   g.id !== UNGROUPED
-                    ? contextMenuBind(() => workspaceMenu(g.id))
+                    ? contextMenuBind(() => workspaceMenu(g.id), () => toggleWorkspace(g.id))
                     : null;
                 return (
                   <div class="workspace" classList={{ open: open() }}>
@@ -2586,12 +2590,7 @@ export default function App() {
                         type="button"
                           class="workspace-toggle"
                           aria-expanded={open()}
-                        onClick={() => toggleWorkspace(g.id)}
-                        onContextMenu={wsMenu?.onContextMenu}
-                        onTouchStart={wsMenu?.onTouchStart}
-                        onTouchMove={wsMenu?.onTouchMove}
-                        onTouchEnd={wsMenu?.onTouchEnd}
-                        onTouchCancel={wsMenu?.onTouchCancel}
+                        {...(wsMenu ?? { onClick: () => toggleWorkspace(g.id) })}
                       >
                         <span class="workspace-chevron" aria-hidden="true">
                           <IconCaretDown class="workspace-chevron-icon" />
@@ -2621,18 +2620,13 @@ export default function App() {
                         <For each={g.agents}>
                           {(a) => {
                             const id = agentId(a);
-                            const menu = contextMenuBind(() => agentMenu(a));
+                            const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
                             return (
                               <button
                                 type="button"
                                 class="agent-row"
                                 classList={{ active: id === selected() }}
-                                onClick={() => selectAgent(id)}
-                                onContextMenu={menu.onContextMenu}
-                                onTouchStart={menu.onTouchStart}
-                                onTouchMove={menu.onTouchMove}
-                                onTouchEnd={menu.onTouchEnd}
-                                onTouchCancel={menu.onTouchCancel}
+                                {...menu}
                               >
                                 <span class="dot-wrap">
                                   <span class="dot" data-status={a.agent_status} />
@@ -2734,19 +2728,14 @@ export default function App() {
                         <For each={g.agents}>
                           {(a) => {
                             const id = agentId(a);
-                            const menu = contextMenuBind(() => agentMenu(a));
+                            const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
                             return (
                               <button
                                 type="button"
                                 class="agent-row"
                                 classList={{ active: id === selected() }}
                                 title={`${agentLabel(a)} · ${a.agent_status}`}
-                                onClick={() => selectAgent(id)}
-                                onContextMenu={menu.onContextMenu}
-                                onTouchStart={menu.onTouchStart}
-                                onTouchMove={menu.onTouchMove}
-                                onTouchEnd={menu.onTouchEnd}
-                                onTouchCancel={menu.onTouchCancel}
+                                {...menu}
                               >
                                 <span class="dot-wrap">
                                   <span class="dot" data-status={a.agent_status} />
@@ -2767,19 +2756,14 @@ export default function App() {
                 <For each={sortedLiveAgents()}>
                   {(a) => {
                     const id = agentId(a);
-                    const menu = contextMenuBind(() => agentMenu(a));
+                    const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
                     return (
                       <button
                         type="button"
                         class="agent-row"
                         classList={{ active: id === selected() }}
                         title={`${agentLabel(a)} · ${liveAgentWorkspace(a)} · ${a.agent_status}`}
-                        onClick={() => selectAgent(id)}
-                        onContextMenu={menu.onContextMenu}
-                        onTouchStart={menu.onTouchStart}
-                        onTouchMove={menu.onTouchMove}
-                        onTouchEnd={menu.onTouchEnd}
-                        onTouchCancel={menu.onTouchCancel}
+                        {...menu}
                       >
                         <span class="dot-wrap">
                           <span class="dot" data-status={a.agent_status} />

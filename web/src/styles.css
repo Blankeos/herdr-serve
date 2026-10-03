@@ -69,6 +69,15 @@ body,
   -webkit-touch-callout: none;
 }
 
+[data-context-menu-trigger],
+[data-context-menu-trigger] *,
+.ctx-menu,
+.ctx-menu * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 button,
 input,
 select,
@@ -2399,6 +2408,7 @@ textarea {
 }
 
 .ctx-item:hover,
+.ctx-item:focus-visible,
 .ctx-item:active {
   background: color-mix(in srgb, #fff 7%, transparent);
 }
@@ -2408,6 +2418,7 @@ textarea {
 }
 
 .ctx-item.danger:hover,
+.ctx-item.danger:focus-visible,
 .ctx-item.danger:active {
   background: color-mix(in srgb, var(--bad) 18%, transparent);
 }
