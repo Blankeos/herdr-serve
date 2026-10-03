@@ -1,4 +1,5 @@
 import { Show, createSignal } from "solid-js";
+import { IconImages } from "../../icons";
 import { quotePathForShell, uploadPhoto } from "./upload";
 
 export type { UploadResult } from "./upload";
@@ -140,7 +141,14 @@ export function PhotoUpload(props: PhotoUploadProps) {
         aria-label="Photo library"
         onClick={openPicker}
       >
-        {busy() ? "Uploading…" : "🖼 Photo library"}
+        {busy() ? (
+          "Uploading…"
+        ) : (
+          <span style={{ display: "inline-flex", "align-items": "center", gap: "0.45rem" }}>
+            <IconImages style={{ width: "1.05rem", height: "1.05rem", "flex-shrink": "0" }} />
+            Photo library
+          </span>
+        )}
       </button>
       <Show when={busy()}>
         <p style={busyStyle} aria-live="polite">

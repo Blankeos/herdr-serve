@@ -92,7 +92,10 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
   });
-  const body = await res.json().catch(() => ({}));
+  const body = await res.json().catch((error) => {
+    if (init?.signal?.aborted) throw error;
+    return {};
+  });
   if (!res.ok) {
     throw new Error(body.error || res.statusText || "request failed");
   }
@@ -112,13 +115,25 @@ export async function authLogin(
   });
 }
 
+// Status reads must not stick in a browser/proxy cache or leave the App's
+// in-flight guard locked forever after a stalled connection.
+async function statusJSON<T>(path: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    return await json<T>(path, { cache: "no-store", signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function listAgents(): Promise<Agent[]> {
-  const data = await json<{ agents: Agent[] }>("/api/agents");
+  const data = await statusJSON<{ agents: Agent[] }>("/api/agents");
   return data.agents || [];
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
-  const data = await json<{ workspaces: Workspace[] }>("/api/workspaces");
+  const data = await statusJSON<{ workspaces: Workspace[] }>("/api/workspaces");
   return data.workspaces || [];
 }
 
@@ -184,7 +199,7 @@ export async function focusTab(tabId: string): Promise<{ ok: boolean }> {
 }
 
 export async function listPanes(): Promise<Agent[]> {
-  const data = await json<{ panes: Agent[] }>("/api/panes");
+  const data = await statusJSON<{ panes: Agent[] }>("/api/panes");
   return data.panes || [];
 }
 

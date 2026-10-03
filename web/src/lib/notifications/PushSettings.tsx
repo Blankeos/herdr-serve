@@ -1,4 +1,5 @@
 import { Show, createSignal, onMount } from "solid-js";
+import "./push-settings.css";
 import {
   disablePush,
   ensurePushSubscribed,
@@ -19,7 +20,7 @@ export type { PushState };
  *   satisfying iOS / Chrome gesture requirements.
  * - Shows graceful states for unsupported browsers, insecure contexts
  *   (HTTP LAN without TLS), and iOS Home-Screen installation guidance.
- * - Uses inline styles only (no styles.css dependency).
+ * - Owns its styles (no styles.css dependency).
  * - After a notification tap the service worker opens `/?agent=<id>`; the
  *   parent (App) calls `consumeAgentDeepLink()` on launch and selects the
  *   matching agent (see ./README.md). This component never consumes the
@@ -77,65 +78,17 @@ export function PushSettings() {
     }
   };
 
-  const card: Record<string, string> = {
-    border: "1px solid rgba(255,255,255,0.12)",
-    "border-radius": "0.75rem",
-    padding: "0.9rem 1rem",
-    background: "rgba(255,255,255,0.03)",
-    display: "flex",
-    "flex-direction": "column",
-    gap: "0.6rem",
-    "max-width": "26rem",
-  };
-  const title: Record<string, string> = {
-    margin: "0",
-    "font-size": "0.95rem",
-    "font-weight": "650",
-  };
-  const desc: Record<string, string> = {
-    margin: "0",
-    "font-size": "0.82rem",
-    opacity: "0.75",
-    "line-height": "1.45",
-  };
-  const btn = (primary: boolean): Record<string, string> => ({
-    appearance: "none",
-    border: primary ? "none" : "1px solid rgba(255,255,255,0.2)",
-    "border-radius": "0.55rem",
-    padding: "0.55rem 0.9rem",
-    "font-size": "0.85rem",
-    "font-weight": "600",
-    cursor: busy() ? "wait" : "pointer",
-    opacity: busy() ? "0.6" : "1",
-    background: primary ? "#6c8ed8" : "transparent",
-    color: primary ? "#0d1117" : "inherit",
-  });
-  const msg = (bad: boolean): Record<string, string> => ({
-    margin: "0",
-    "font-size": "0.8rem",
-    "line-height": "1.45",
-    color: bad ? "#f0883e" : "#7ee787",
-    "white-space": "pre-line",
-  });
-  const steps: Record<string, string> = {
-    margin: "0.2rem 0 0",
-    "padding-left": "1.1rem",
-    "font-size": "0.8rem",
-    opacity: "0.85",
-    "line-height": "1.6",
-  };
-
   return (
-    <div style={card}>
-      <h3 style={title}>Notifications</h3>
-      <p style={desc}>
+    <section class="push-settings" aria-label="Notifications">
+      <h3 class="push-settings-title">Notifications</h3>
+      <p class="push-settings-description">
         Background push for agent completions (finished / idle / needs
         attention) — works with the app closed. Tapping a notification
         deep-links to the agent.
       </p>
 
       <Show when={state() === null}>
-        <p style={desc}>Checking notification support…</p>
+        <p class="push-settings-description">Checking notification support…</p>
       </Show>
 
       <Show when={state() !== null}>
@@ -146,7 +99,7 @@ export function PushSettings() {
               <Show
                 when={state()!.reason === "insecure-context"}
                 fallback={
-                  <p style={msg(true)}>
+                  <p class="push-settings-message error">
                     Push isn't available in this browser
                     {state()!.ios
                       ? " — on iPhone/iPad install the app first (Share → Add to Home Screen) and open it from the Home Screen."
@@ -154,7 +107,7 @@ export function PushSettings() {
                   </p>
                 }
               >
-                <p style={msg(true)}>
+                <p class="push-settings-message error">
                   Push needs a secure context — open herdr-serve over HTTPS
                   (tunnel mode) or http://localhost. Plain-http LAN/IP pages
                   can't subscribe.
@@ -165,11 +118,11 @@ export function PushSettings() {
         >
           <Show when={state()!.needsInstall}>
             <div>
-              <p style={msg(true)}>
+              <p class="push-settings-message error">
                 iPhone/iPad: web push works only in the installed app (iOS
                 16.4+).
               </p>
-              <ol style={steps}>
+              <ol class="push-settings-steps">
                 <li>Open this page in Safari.</li>
                 <li>Share → Add to Home Screen → Add.</li>
                 <li>Open herdr-serve from the Home Screen.</li>
@@ -179,7 +132,7 @@ export function PushSettings() {
           </Show>
 
           <Show when={state()!.permission === "denied"}>
-            <p style={msg(true)}>
+            <p class="push-settings-message error">
               Notifications are blocked. Allow them in the browser / OS
               settings
               {state()!.ios
@@ -189,12 +142,12 @@ export function PushSettings() {
             </p>
           </Show>
 
-          <div style={{ display: "flex", gap: "0.5rem", "flex-wrap": "wrap" }}>
+          <div class="push-settings-actions">
             <Show
               when={!state()!.subscribed}
               fallback={
                 <button
-                  style={btn(false)}
+                  class="push-settings-button"
                   disabled={busy()}
                   onClick={disable}
                 >
@@ -203,7 +156,7 @@ export function PushSettings() {
               }
             >
               <button
-                style={btn(true)}
+                class="push-settings-button"
                 disabled={busy() || state()!.needsInstall}
                 onClick={enable}
                 title={
@@ -218,7 +171,7 @@ export function PushSettings() {
           </div>
 
           <Show when={state()!.subscribed}>
-            <p style={desc}>
+            <p class="push-settings-description">
               On for this device
               {state()!.standalone ? " (installed app)" : ""}. New
               working → done / idle / blocked transitions push once.
@@ -227,13 +180,13 @@ export function PushSettings() {
         </Show>
 
         <Show when={error()}>
-          <p style={msg(true)}>{error()}</p>
+          <p class="push-settings-message error" role="alert">{error()}</p>
         </Show>
         <Show when={note()}>
-          <p style={msg(false)}>{note()}</p>
+          <p class="push-settings-message success" role="status">{note()}</p>
         </Show>
       </Show>
-    </div>
+    </section>
   );
 }
 

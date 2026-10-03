@@ -1105,8 +1105,8 @@ textarea {
   min-width: 1.6rem;
   min-height: 1.6rem;
   margin: -0.15rem 0;
-  color: var(--muted);
-  font-size: 0.95rem;
+  color: #aeb0b7;
+  font-size: 1.1rem;
   line-height: 1;
   padding: 0.2rem;
   user-select: none;
@@ -1320,294 +1320,236 @@ textarea {
   -webkit-user-select: none;
 }
 
+/* Panel sizes are owned by SidebarPanels; drawer geometry stays unchanged. */
 .sidebar {
   width: var(--sidebar-w);
   max-width: 86vw;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #1a1a1a;
-  border-right: 1px solid var(--border);
+  background: #191a1c;
+  border-right: 1px solid #303135;
   z-index: 30;
   will-change: transform;
 }
-
 .sidebar-brand {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  padding: 0.9rem 0.9rem 0.8rem;
-  border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  padding: 1.15rem 1rem;
+  border-bottom: 1px solid #ffffff0a;
 }
-
 .sidebar-brand-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.7rem;
 }
-
 .sidebar-brand-icon {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 0.5rem;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
   flex: 0 0 auto;
   display: block;
 }
-
 .sidebar-brand-text {
-  flex: 1 1 auto;
   min-width: 0;
 }
-
 .sidebar-brand-title {
-  font-size: 0.92rem;
+  font-size: 0.94rem;
   font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--text);
+  letter-spacing: -0.025em;
 }
-
 .sidebar-brand-sub {
-  font-size: 0.68rem;
-  font-weight: 500;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
   color: var(--muted);
-  letter-spacing: -0.005em;
 }
-
-.sidebar-brand .inline-create-ws {
-  margin-top: 0.55rem;
-}
-
-.sidebar-scroll {
+.sidebar-panels {
   flex: 1 1 auto;
-  min-height: 7rem;
-  overflow-y: auto;
-  overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  padding: 0.55rem 0.5rem 0.85rem;
-  scrollbar-width: thin;
-  scrollbar-color: #2e2e2e transparent;
+  min-height: 0;
+  overflow: hidden;
 }
-
-/* Live agents: independent scroll region under the workspace list. */
+.sidebar-workspaces,
 .sidebar-agents {
-  flex: 0 1 auto;
-  min-height: 6rem;
-  max-height: 42%;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-top: 1px solid var(--border);
-  background: #1a1a1a;
+  min-height: 0;
+  overflow: hidden;
 }
-
 .sidebar-section-head {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.6rem 0.65rem 0.4rem;
+  padding: 0.7rem 0.9rem 0.4rem;
 }
-
 .sidebar-section-title {
-  font-size: 0.67rem;
+  font-size: 0.76rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--muted);
+  letter-spacing: 0;
+  color: #c4c6cb;
 }
-
-/* Agents sort toggle (sidebar-only): compact Priority / Grouped switch INLINE
-   next to the AGENTS heading (no extra row), mirroring herdr's agents-panel
-   sort toggle (Spaces=>"grouped", Priority=>"priority"). Lives inside
-   `.sidebar-agents-head` so Workspaces `.sidebar-scroll` and Agents
-   `.sidebar-agents-scroll` each keep their own scroll. Narrow-sidebar fit:
-   single-row flex with tight gaps, small pill buttons, and a compact count. */
-.sidebar-agents-head {
-  gap: 0.4rem;
-  padding: 0.55rem 0.5rem 0.35rem 0.65rem;
-  flex-wrap: nowrap;
-  min-width: 0;
+.sidebar .sidebar-section-actions {
+  gap: 0.5rem;
 }
-
-.sidebar-agents-head .sidebar-section-title {
-  flex: 0 0 auto;
-}
-
-.sidebar-agents-head .sidebar-section-actions {
-  gap: 0.25rem;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
-.sidebar-agents-head .workspace-count {
-  white-space: nowrap;
-  font-size: 0.62rem;
-  padding: 0.05rem 0.28rem;
-}
-
-.sidebar-agents-head .workspace-add {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-.agent-sort-toggle {
-  flex: 0 1 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1rem;
-  margin: 0;
-  padding: 0.1rem;
-  border: 1px solid color-mix(in srgb, #fff 6%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, #fff 3%, #141414);
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.agent-sort-toggle-inline {
-  margin: 0;
-}
-
-.agent-sort-btn {
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  padding: 0.18rem 0.45rem;
-  font-size: 0.64rem;
-  font-weight: 550;
-  letter-spacing: 0.01em;
-  line-height: 1.2;
-  cursor: pointer;
-  touch-action: manipulation;
-  white-space: nowrap;
-}
-
-.agent-sort-btn:hover {
-  color: var(--text);
-}
-
-.agent-sort-btn.active {
-  background: color-mix(in srgb, #fff 10%, #1a1a1a);
-  color: var(--text);
-}
-
+.sidebar-scroll,
 .sidebar-agents-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 0 0.4rem 0.6rem;
   scrollbar-width: thin;
-  scrollbar-color: #2e2e2e transparent;
+  scrollbar-color: #3c3e43 transparent;
+  padding: 0.3rem 0.55rem 0.7rem;
+  overscroll-behavior: contain;
 }
-
+.sidebar-splitter {
+  position: relative;
+  flex: 0 0 14px;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: row-resize;
+  touch-action: none;
+}
+.sidebar-splitter::before {
+  content: "";
+  position: absolute;
+  left: 0.9rem;
+  right: 0.9rem;
+  height: 1px;
+  background: #303135;
+}
+.sidebar-splitter-grip {
+  position: relative;
+  width: 28px;
+  height: 4px;
+  border-radius: 3px;
+  background: #51545b;
+  box-shadow: 0 0 0 5px #191a1c;
+  transition:
+    background 0.15s ease,
+    width 0.15s ease;
+}
+.sidebar-splitter:hover .sidebar-splitter-grip,
+.sidebar-splitter[data-active] .sidebar-splitter-grip,
+.sidebar-splitter[data-dragging] .sidebar-splitter-grip {
+  width: 40px;
+  background: var(--accent);
+}
+.sidebar-splitter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.agent-sort-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.2rem;
+  margin: 0.2rem 0.9rem 0.45rem;
+  padding: 0.2rem;
+  border: 1px solid #ffffff0b;
+  border-radius: 0.55rem;
+  background: #131416;
+}
+.agent-sort-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.35rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.agent-sort-btn:hover {
+  color: var(--text);
+}
+.agent-sort-btn.active {
+  background: #2c2e33;
+  border-color: #ffffff0a;
+  color: var(--text);
+  box-shadow: 0 1px 2px #00000020;
+}
 .live-group {
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.6rem;
 }
-
 .live-group-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.3rem 0.45rem 0.2rem;
+  padding: 0.45rem 0.65rem 0.25rem;
 }
-
 .live-group-title {
-  font-size: 0.66rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  font-weight: 500;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .live-group-count {
-  flex: 0 0 auto;
   font-size: 0.65rem;
-  font-weight: 500;
   color: var(--muted);
-  padding: 0.05rem 0.3rem;
-  border-radius: 999px;
-  background: #1a1a1a;
-  border: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
-
-.sidebar-agents .agent-row {
-  padding: 0.45rem 0.5rem;
+.agent-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 auto;
 }
-
 .agent-row-ws {
-  flex: 0 0 auto;
-  max-width: 5.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.66rem;
-  font-weight: 500;
+  font-size: 0.68rem;
+  font-weight: 400;
   color: var(--muted);
 }
-
-.sidebar-agents .empty-inline {
-  padding: 0.45rem 0.5rem;
-}
-
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: 0.6rem 0.65rem calc(0.6rem + var(--safe-bottom));
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
+  padding: 0.65rem 0.75rem calc(0.65rem + var(--safe-bottom));
+  border-top: 1px solid #ffffff0a;
 }
-
 .sidebar-settings-btn {
   display: flex;
-  flex-direction: row;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.65rem;
   width: 100%;
-  padding: 0.55rem 0.6rem;
-  min-height: 2.4rem;
+  padding: 0.65rem;
+  min-height: 2.5rem;
   border: 0;
   border-radius: 0.5rem;
   background: transparent;
-  color: var(--muted);
-  font-size: 0.82rem;
+  color: #b9bbc1;
+  font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
   text-align: left;
 }
-
 .sidebar-settings-btn:hover,
 .sidebar-settings-btn:active {
   color: var(--text);
-  background: color-mix(in srgb, #fff 5%, transparent);
+  background: #ffffff08;
 }
-
 .sidebar-settings-icon {
   width: 1.1rem;
   height: 1.1rem;
   flex: 0 0 auto;
-  color: var(--muted);
 }
-
-.sidebar-settings-btn:hover .sidebar-settings-icon,
-.sidebar-settings-btn:active .sidebar-settings-icon {
-  color: var(--text);
+.sidebar button:focus-visible:not(.sidebar-splitter) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
-
 .workspace {
   margin-bottom: 0.2rem;
 }
@@ -1686,25 +1628,51 @@ textarea {
 }
 
 .workspace-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.2rem;
   width: 100%;
-  padding: 0.2rem 0.4rem 0.2rem 0.25rem;
-  min-height: 2.25rem;
+  padding: 0.15rem 0.25rem;
+  min-height: 2.6rem;
+  border-radius: 0.5rem;
+}
+
+.workspace-header:hover,
+.workspace-header:focus-within {
+  background: color-mix(in srgb, #fff 4%, transparent);
+}
+
+.workspace-header:has(> .workspace-add) .workspace-toggle {
+  padding-right: 2.5rem;
+}
+
+.workspace-header > .workspace-add {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2rem;
+  height: 2rem;
+}
+
+.workspace-header > .workspace-add:hover,
+.workspace-header > .workspace-add:active {
+  border-color: transparent;
+  background: color-mix(in srgb, #fff 6%, transparent);
 }
 
 .workspace-toggle {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.55rem;
   flex: 1 1 auto;
   min-width: 0;
   border: none;
   background: transparent;
   color: var(--text);
   text-align: left;
-  padding: 0.4rem 0.3rem;
+  padding: 0.55rem 0.3rem;
   border-radius: 0.5rem;
   cursor: pointer;
   font: inherit;
@@ -1713,7 +1681,7 @@ textarea {
 }
 
 .workspace-toggle:hover {
-  background: color-mix(in srgb, #fff 4%, transparent);
+  background: transparent;
 }
 
 .workspace-toggle:active {
@@ -1760,8 +1728,8 @@ textarea {
   color: var(--muted);
   padding: 0.1rem 0.35rem;
   border-radius: 999px;
-  background: #222222;
-  border: 1px solid var(--border);
+  background: #ffffff05;
+  border: 1px solid #ffffff0a;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1774,8 +1742,8 @@ textarea {
   border: 1px solid transparent;
   border-radius: 0.45rem;
   background: transparent;
-  color: var(--muted);
-  font-size: 0.95rem;
+  color: #aeb0b7;
+  font-size: 1.1rem;
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -1808,9 +1776,9 @@ textarea {
 .agent-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.65rem;
   width: 100%;
-  padding: 0.45rem 0.5rem;
+  padding: 0.6rem 0.65rem;
   margin: 0.1rem 0;
   min-height: 2.25rem;
   border: 1px solid transparent;
@@ -1828,8 +1796,8 @@ textarea {
 }
 
 .agent-row.active {
-  background: color-mix(in srgb, var(--accent) 12%, #1a1a1a);
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 11%, #191a1c);
+  border-color: color-mix(in srgb, var(--accent) 23%, #303135);
 }
 
 .agent-row .dot-wrap {

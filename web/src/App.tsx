@@ -48,7 +48,9 @@ import {
 } from "./shortcuts";
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
 import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "./keyboardPrefs";
+import { SidebarPanels } from "./SidebarPanels";
 import { trackMobileViewport } from "./lib/mobile-viewport";
+import { startStatusRefresh } from "./lib/status-refresh";
 import { prepareTerminalInput } from "./lib/terminal/mobile-input";
 import { installNativeBackspace } from "./lib/terminal/native-backspace";
 import { installNativeReplacement } from "./lib/terminal/native-replacement";
@@ -59,6 +61,8 @@ import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { terminalPreview } from "./lib/terminal/preview";
 import { manageDialogFocus } from "./lib/dialog-focus";
+import { BottomSheet } from "./lib/bottom-sheet";
+import { scrollFade } from "./lib/scroll-fade";
 import { IconSettings, IconCaretDown, IconKeyboard, IconTerminal } from "./icons";
 import {
   SoftKeyboard,
@@ -650,8 +654,7 @@ export default function App() {
     return identical ? prev : out;
   };
 
-  // refresh* returns true when it actually wrote new data, which drives the
-  // adaptive poll cadence (fast while things change, slower at rest).
+  // refresh* returns true when it actually wrote new data.
   // Notification deep link (`/?agent=<id>` from SW notificationclick):
   // consumed once at App initialization. refreshAgents selects the matching
   // agent when it appears, overriding the default focused-first pick.
@@ -730,11 +733,8 @@ export default function App() {
     return changed;
   };
 
-  // Status queries exec `herdr` server-side, and those execs measurably
-  // disturb the terminal takeover stream (tmux serializes them). So there is
-  // NO background polling: refreshes are event-driven only (open drawer,
-  // select agent, ws lifecycle, terminal.closed, tab visible, create/delete).
-  // This helper coalesces bursts of those triggers into single round-trips.
+  // Explicit mutations also refresh pane/tab metadata. Coalesce those bursts;
+  // periodic status refreshes below use only the cheaper cached snapshot.
   let statusRefreshTimer: number | undefined;
   let statusRefreshLast = 0;
   const scheduleStatusRefresh = (delayMs = 0) => {
@@ -2105,9 +2105,6 @@ export default function App() {
         void refreshPanes();
       }
     });
-    // No background polling and no visibility/drawer auto-refresh. Status
-    // queries exec herdr and hitch the takeover stream; refresh only after
-    // explicit create/delete (and initial load above).
 
     const mq = window.matchMedia(MOBILE_MQ);
     const onMq = () => {
@@ -2357,6 +2354,16 @@ export default function App() {
   // (Only desktop resize / explicit dismiss closes it.)
 
   createEffect(() => {
+    if (!authReady() || authRequired()) return;
+    // Both endpoints share one server-side snapshot/cache. Do not poll panes:
+    // pane + tab list execs can hitch the live terminal takeover stream.
+    const stop = startStatusRefresh(() =>
+      Promise.all([refreshAgents(true), refreshWorkspaces(true)]),
+    );
+    onCleanup(stop);
+  });
+
+  createEffect(() => {
     const mode = keyboardMode();
     const mobile = isMobile();
     if (termReady() && term?.textarea) {
@@ -2473,7 +2480,7 @@ export default function App() {
 
   const terminalsChips = () => (
     <div class="terminals-chips" aria-label="Shell panes">
-      <div class="terminals-chips-scroll">
+      <div class="terminals-chips-scroll" use:scrollFade="horizontal">
         <For each={focusedShells()}>
           {(p) => {
             const id = agentId(p);
@@ -2562,227 +2569,243 @@ export default function App() {
               />
               <div class="sidebar-brand-text">
                 <div class="sidebar-brand-title">herdr-serve</div>
-                <div class="sidebar-brand-sub">workspaces</div>
+                <div class="sidebar-brand-sub">Agent control center</div>
               </div>
-              <button
-                type="button"
-                class="workspace-add"
-                aria-label="New workspace"
-                title="New workspace"
-                onClick={() => openCreateWorkspace()}
-              >
-                +
-              </button>
             </div>
           </div>
-          <div class="sidebar-scroll">
-            <For each={workspaceGroups()}>
-              {(g) => {
-                const open = () => !!expandedIds()[g.id];
-                const wsMenu =
-                  g.id !== UNGROUPED
-                    ? contextMenuBind(() => workspaceMenu(g.id), () => toggleWorkspace(g.id))
-                    : null;
-                return (
-                  <div class="workspace" classList={{ open: open() }}>
-                    <div class="workspace-header">
-                      <button
-                        type="button"
-                          class="workspace-toggle"
-                          aria-expanded={open()}
-                        {...(wsMenu ?? { onClick: () => toggleWorkspace(g.id) })}
-                      >
-                        <span class="workspace-chevron" aria-hidden="true">
-                          <IconCaretDown class="workspace-chevron-icon" />
-                        </span>
-                        <ProjectFavicon
-                          cwd={g.cwd || ""}
-                          label={g.label}
-                          running={g.agents.some((a) => a.agent_status === "working")}
-                        />
-                        <span class="workspace-name">{g.label}</span>
-                        <span class="workspace-count">{g.agents.length}</span>
-                      </button>
-                      <Show when={g.id !== UNGROUPED}>
-                        <button
-                          type="button"
-                          class="workspace-add"
-                          aria-label={`New agent in ${g.label}`}
-                          title={`New agent in ${g.label}`}
-                          onClick={(e) => openCreateAgent(g.id, e)}
-                        >
-                          +
-                        </button>
-                      </Show>
-                    </div>
-                    <Show when={open()}>
-                      <div class="workspace-body">
-                        <For each={g.agents}>
-                          {(a) => {
-                            const id = agentId(a);
-                            const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
-                            return (
-                              <button
-                                type="button"
-                                class="agent-row"
-                                classList={{ active: id === selected() }}
-                                {...menu}
-                              >
-                                <span class="dot-wrap">
-                                  <span class="dot" data-status={a.agent_status} />
-                                  <Show when={a.agent_status === "working"}>
-                                    <span class="dot-ping" />
-                                  </Show>
-                                </span>
-                                <span class="agent-row-name">{agentLabel(a)}</span>
-                              </button>
-                            );
-                          }}
-                        </For>
-                        <Show when={!g.agents.length}>
-                          <div class="empty-inline">No agents</div>
-                        </Show>
-                      </div>
-                    </Show>
+          <SidebarPanels
+            workspaces={
+              <>
+                <div class="sidebar-section-head">
+                  <span class="sidebar-section-title">Workspaces</span>
+                  <div class="sidebar-section-actions">
+                    <span class="workspace-count">{workspaceGroups().length}</span>
+                    <button
+                      type="button"
+                      class="workspace-add"
+                      aria-label="New workspace"
+                      title="New workspace"
+                      onClick={() => openCreateWorkspace()}
+                    >
+                      +
+                    </button>
                   </div>
-                );
-              }}
-            </For>
-            <Show when={!workspaceGroups().length}>
-              <div class="empty-inline">No workspaces yet.</div>
-            </Show>
-          </div>
-          <div class="sidebar-agents" aria-label="Live agents">
-            <div class="sidebar-section-head sidebar-agents-head">
-              <span class="sidebar-section-title">Agents</span>
-              {/* Compact Priority/Grouped toggle INLINE next to the heading
-                  (no extra row; mirrors herdr Spaces=>"grouped",
-                  Priority=>"priority"). */}
-              <div
-                class="agent-sort-toggle agent-sort-toggle-inline"
-                role="tablist"
-                aria-label="Agent sort"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  class="agent-sort-btn"
-                  classList={{ active: agentSort() === "priority" }}
-                  aria-selected={agentSort() === "priority"}
-                  title="Attention queue: blocked, done, working, idle, unknown (flat, like herdr priority)"
-                  onClick={() => setAgentSortPersist("priority")}
-                >
-                  Priority
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  class="agent-sort-btn"
-                  classList={{ active: agentSort() === "grouped" }}
-                  aria-selected={agentSort() === "grouped"}
-                  title="Grouped by workspace in native order (like herdr spaces)"
-                  onClick={() => setAgentSortPersist("grouped")}
-                >
-                  Grouped
-                </button>
-              </div>
-              <div class="sidebar-section-actions">
-                <Show
-                  when={liveCounts().total > 0}
-                  fallback={<span class="workspace-count">0</span>}
-                >
-                  <span
-                    class="workspace-count"
-                    title={`${liveCounts().live} live / ${liveCounts().total} total`}
-                  >
-                    {liveCounts().live}/{liveCounts().total}
-                  </span>
-                </Show>
-                <button
-                  type="button"
-                  class="workspace-add"
-                  aria-label="New agent"
-                  title="New agent"
-                  onClick={(e) => openCreateAgent(undefined, e)}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-            {/* Independent scroll region (unchanged): only this div scrolls,
-                the Workspaces `.sidebar-scroll` above stays independent.
-                Grouped = native Spaces (workspace sections in native order,
-                native agent order within each workspace); Priority = flat
-                attention queue below. */}
-            <div class="sidebar-agents-scroll">
-              <Show
-                when={agentSort() === "priority"}
-                fallback={
-                  <For each={liveAgentGroups()}>
-                    {(g) => (
-                      <div class="live-group">
-                        <div class="live-group-head">
-                          <span class="live-group-title">{g.title}</span>
-                          <span class="live-group-count">{g.agents.length}</span>
-                        </div>
-                        <For each={g.agents}>
-                          {(a) => {
-                            const id = agentId(a);
-                            const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
-                            return (
+                </div>
+                <div class="sidebar-scroll" use:scrollFade="vertical">
+                  <For each={workspaceGroups()}>
+                    {(g) => {
+                      const open = () => !!expandedIds()[g.id];
+                      const wsMenu =
+                        g.id !== UNGROUPED
+                          ? contextMenuBind(
+                              () => workspaceMenu(g.id),
+                              () => toggleWorkspace(g.id),
+                            )
+                          : null;
+                      return (
+                        <div class="workspace" classList={{ open: open() }}>
+                          <div class="workspace-header">
+                            <button
+                              type="button"
+                              class="workspace-toggle"
+                              aria-expanded={open()}
+                              {...(wsMenu ?? { onClick: () => toggleWorkspace(g.id) })}
+                            >
+                              <span class="workspace-chevron" aria-hidden="true">
+                                <IconCaretDown class="workspace-chevron-icon" />
+                              </span>
+                              <ProjectFavicon
+                                cwd={g.cwd || ""}
+                                label={g.label}
+                                running={g.agents.some((a) => a.agent_status === "working")}
+                              />
+                              <span class="workspace-name">{g.label}</span>
+                              <span class="workspace-count">{g.agents.length}</span>
+                            </button>
+                            <Show when={g.id !== UNGROUPED}>
                               <button
                                 type="button"
-                                class="agent-row"
-                                classList={{ active: id === selected() }}
-                                title={`${agentLabel(a)} · ${a.agent_status}`}
-                                {...menu}
+                                class="workspace-add"
+                                aria-label={`New agent in ${g.label}`}
+                                title={`New agent in ${g.label}`}
+                                onClick={(e) => openCreateAgent(g.id, e)}
                               >
-                                <span class="dot-wrap">
-                                  <span class="dot" data-status={a.agent_status} />
-                                  <Show when={a.agent_status === "working"}>
-                                    <span class="dot-ping" />
-                                  </Show>
-                                </span>
-                                <span class="agent-row-name">{agentLabel(a)}</span>
+                                +
                               </button>
-                            );
-                          }}
-                        </For>
-                      </div>
-                    )}
-                  </For>
-                }
-              >
-                <For each={sortedLiveAgents()}>
-                  {(a) => {
-                    const id = agentId(a);
-                    const menu = contextMenuBind(() => agentMenu(a), () => selectAgent(id));
-                    return (
-                      <button
-                        type="button"
-                        class="agent-row"
-                        classList={{ active: id === selected() }}
-                        title={`${agentLabel(a)} · ${liveAgentWorkspace(a)} · ${a.agent_status}`}
-                        {...menu}
-                      >
-                        <span class="dot-wrap">
-                          <span class="dot" data-status={a.agent_status} />
-                          <Show when={a.agent_status === "working"}>
-                            <span class="dot-ping" />
+                            </Show>
+                          </div>
+                          <Show when={open()}>
+                            <div class="workspace-body">
+                              <For each={g.agents}>
+                                {(a) => {
+                                  const id = agentId(a);
+                                  const menu = contextMenuBind(
+                                    () => agentMenu(a),
+                                    () => selectAgent(id),
+                                  );
+                                  return (
+                                    <button
+                                      type="button"
+                                      class="agent-row"
+                                      classList={{ active: id === selected() }}
+                                      {...menu}
+                                    >
+                                      <span class="dot-wrap">
+                                        <span class="dot" data-status={a.agent_status} />
+                                        <Show when={a.agent_status === "working"}>
+                                          <span class="dot-ping" />
+                                        </Show>
+                                      </span>
+                                      <span class="agent-row-name">{agentLabel(a)}</span>
+                                    </button>
+                                  );
+                                }}
+                              </For>
+                              <Show when={!g.agents.length}>
+                                <div class="empty-inline">No agents</div>
+                              </Show>
+                            </div>
                           </Show>
-                        </span>
-                        <span class="agent-row-name">{agentLabel(a)}</span>
-                        <span class="agent-row-ws">{liveAgentWorkspace(a)}</span>
-                      </button>
-                    );
-                  }}
-                </For>
-              </Show>
-              <Show when={!agents().length}>
-                <div class="empty-inline">No live agents</div>
-              </Show>
-            </div>
-          </div>
+                        </div>
+                      );
+                    }}
+                  </For>
+                  <Show when={!workspaceGroups().length}>
+                    <div class="empty-inline">No workspaces yet.</div>
+                  </Show>
+                </div>
+              </>
+            }
+            agents={
+              <>
+                <div class="sidebar-section-head sidebar-agents-head">
+                  <span class="sidebar-section-title">Agents</span>
+                  <div class="sidebar-section-actions">
+                    <Show when={liveCounts().total > 0} fallback={<span class="workspace-count">0</span>}>
+                      <span
+                        class="workspace-count"
+                        title={`${liveCounts().live} live / ${liveCounts().total} total`}
+                      >
+                        {liveCounts().live}/{liveCounts().total}
+                      </span>
+                    </Show>
+                    <button
+                      type="button"
+                      class="workspace-add"
+                      aria-label="New agent"
+                      title="New agent"
+                      onClick={(e) => openCreateAgent(undefined, e)}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div class="agent-sort-toggle" role="group" aria-label="Agent sort">
+                  <button
+                    type="button"
+                    class="agent-sort-btn"
+                    classList={{ active: agentSort() === "priority" }}
+                    aria-pressed={agentSort() === "priority"}
+                    title="Attention queue: blocked, done, working, idle, unknown (flat, like herdr priority)"
+                    onClick={() => setAgentSortPersist("priority")}
+                  >
+                    Priority
+                  </button>
+                  <button
+                    type="button"
+                    class="agent-sort-btn"
+                    classList={{ active: agentSort() === "grouped" }}
+                    aria-pressed={agentSort() === "grouped"}
+                    title="Grouped by workspace in native order (like herdr spaces)"
+                    onClick={() => setAgentSortPersist("grouped")}
+                  >
+                    Grouped
+                  </button>
+                </div>
+                {/* Independent scroll region (unchanged): only this div scrolls,
+                          the Workspaces `.sidebar-scroll` above stays independent.
+                          Grouped = native Spaces (workspace sections in native order,
+                          native agent order within each workspace); Priority = flat
+                          attention queue below. */}
+                <div class="sidebar-agents-scroll" use:scrollFade="vertical">
+                  <Show
+                    when={agentSort() === "priority"}
+                    fallback={
+                      <For each={liveAgentGroups()}>
+                        {(g) => (
+                          <div class="live-group">
+                            <div class="live-group-head">
+                              <span class="live-group-title">{g.title}</span>
+                              <span class="live-group-count">{g.agents.length}</span>
+                            </div>
+                            <For each={g.agents}>
+                              {(a) => {
+                                const id = agentId(a);
+                                const menu = contextMenuBind(
+                                  () => agentMenu(a),
+                                  () => selectAgent(id),
+                                );
+                                return (
+                                  <button
+                                    type="button"
+                                    class="agent-row"
+                                    classList={{ active: id === selected() }}
+                                    title={`${agentLabel(a)} · ${a.agent_status}`}
+                                    {...menu}
+                                  >
+                                    <span class="dot-wrap">
+                                      <span class="dot" data-status={a.agent_status} />
+                                      <Show when={a.agent_status === "working"}>
+                                        <span class="dot-ping" />
+                                      </Show>
+                                    </span>
+                                    <span class="agent-row-name">{agentLabel(a)}</span>
+                                  </button>
+                                );
+                              }}
+                            </For>
+                          </div>
+                        )}
+                      </For>
+                    }
+                  >
+                    <For each={sortedLiveAgents()}>
+                      {(a) => {
+                        const id = agentId(a);
+                        const menu = contextMenuBind(
+                          () => agentMenu(a),
+                          () => selectAgent(id),
+                        );
+                        return (
+                          <button
+                            type="button"
+                            class="agent-row"
+                            classList={{ active: id === selected() }}
+                            title={`${agentLabel(a)} · ${liveAgentWorkspace(a)} · ${a.agent_status}`}
+                            {...menu}
+                          >
+                            <span class="dot-wrap">
+                              <span class="dot" data-status={a.agent_status} />
+                              <Show when={a.agent_status === "working"}>
+                                <span class="dot-ping" />
+                              </Show>
+                            </span>
+                            <span class="agent-row-copy">
+                              <span class="agent-row-name">{agentLabel(a)}</span>
+                              <span class="agent-row-ws">{liveAgentWorkspace(a)}</span>
+                            </span>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </Show>
+                  <Show when={!agents().length}>
+                    <div class="empty-inline">No live agents</div>
+                  </Show>
+                </div>
+              </>
+            }
+          />
           <div class="sidebar-footer">
             <button type="button" class="sidebar-settings-btn" onClick={() => openSettings()}>
               <IconSettings class="sidebar-settings-icon" />
@@ -2908,7 +2931,7 @@ export default function App() {
           </div>
 
           <nav class="dock" aria-label="Shortcut keys" ref={dockEl} onPointerDown={keepNativeKeyboardFocus}>
-            <div class="keybar-scroll">
+            <div class="keybar-scroll" use:scrollFade="horizontal">
               <Show when={isMobile()}>
                 <button
                   type="button"
@@ -3179,58 +3202,61 @@ export default function App() {
         </form>
       </Show>
 
-      <Show when={settingsOpen()}>
-        <div class="sheet-backdrop" onClick={() => closeSettings()} />
-        <div class="sheet sheet-tall" role="dialog" aria-label="Settings">
-          <div class="sheet-head">
-            <div class="sheet-title">Settings</div>
-            <button type="button" class="sheet-close" onClick={() => closeSettings()}>
-              Close
-            </button>
-          </div>
-
-          <div class="sheet-tabs" role="tablist">
+      <BottomSheet
+        open={settingsOpen()}
+        onOpenChange={(open) => { if (!open) closeSettings(); }}
+        title="Settings"
+        description="Make this device work the way you do."
+      >
+          <nav class="settings-nav" aria-label="Settings sections" data-corvu-no-drag>
             <button
               type="button"
-              role="tab"
               class="sheet-tab"
               classList={{ active: settingsTab() === "general" }}
-              aria-selected={settingsTab() === "general"}
+              aria-pressed={settingsTab() === "general"}
               onClick={() => setSettingsTab("general")}
             >
+              <IconSettings />
               General
             </button>
             <button
               type="button"
-              role="tab"
               class="sheet-tab"
               classList={{ active: settingsTab() === "shortcuts" }}
-              aria-selected={settingsTab() === "shortcuts"}
+              aria-pressed={settingsTab() === "shortcuts"}
               onClick={() => setSettingsTab("shortcuts")}
             >
+              <IconKeyboard />
               Shortcuts
             </button>
-          </div>
+          </nav>
 
-          <div class="sheet-body">
+          <div class="settings-body" use:scrollFade="vertical" data-corvu-no-drag>
 
           <Show when={settingsTab() === "general"}>
+            <div class="settings-section-heading">
+              <h3>General</h3>
+              <p>Keyboard, scrolling, and notifications for this device.</p>
+            </div>
             <div class="settings-general">
-              <label class="field">
-                <span>Mobile keyboard</span>
-                <select
-                  value={keyboardMode()}
-                  onChange={(e) => updateKeyboardMode(e.currentTarget.value as KeyboardMode)}
-                >
-                  <option value="native">Native (default)</option>
-                  <option value="simulated">Simulated on-screen keyboard</option>
-                </select>
-              </label>
-              <p class="sheet-help">
-                Native uses your phone’s keyboard. Tap the terminal or keyboard button to type;
-                shortcut keys stay above it. Choose simulated to use the built-in keyboard instead.
-                Saved automatically to this browser.
-              </p>
+              <section class="settings-group">
+                <h4>Mobile keyboard</h4>
+                <p class="sheet-help">Tap the terminal or keyboard button to type. Your shortcuts stay within reach.</p>
+                <div class="settings-choices" role="group" aria-label="Mobile keyboard">
+                  <For each={[
+                    { id: "native" as KeyboardMode, label: "Native", description: "Use your phone’s keyboard" },
+                    { id: "simulated" as KeyboardMode, label: "Built-in", description: "Use the on-screen key layout" },
+                  ]}>
+                    {(choice) => (
+                      <button type="button" class="settings-choice" aria-pressed={keyboardMode() === choice.id} onClick={() => updateKeyboardMode(choice.id)}>
+                        <span class="settings-choice-indicator" aria-hidden="true" />
+                        <span><strong>{choice.label}</strong><small>{choice.description}</small></span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </section>
+              <section class="settings-group">
               <label class="field">
                 <span>Scroll mode</span>
                 <select
@@ -3248,8 +3274,9 @@ export default function App() {
                 otherwise falls back to host scrollback. Mouse reports and key chords always
                 send those inputs; host always scrolls the terminal buffer.
               </p>
+              </section>
               <Show when={isMobile()}>
-                <details>
+                <details class="settings-group settings-diagnostics">
                   <summary>Keyboard diagnostics</summary>
                   <p class="sheet-help">Records event types and input geometry for 20 seconds locally, never your text or clipboard. Record, hold Backspace in the terminal, then return here to download the trace.</p>
                   <button type="button" class="sheet-secondary" disabled={!selected()} onClick={() => {
@@ -3265,6 +3292,10 @@ export default function App() {
           </Show>
 
           <Show when={settingsTab() === "shortcuts"}>
+          <div class="settings-section-heading">
+            <h3>Shortcuts</h3>
+            <p>Keep your most-used keys in the terminal’s shortcut bar.</p>
+          </div>
           <p class="sheet-help">
             Keys appear in the footer bar. Stored in this browser’s localStorage — export JSON to
             copy to another phone.
@@ -3299,7 +3330,7 @@ export default function App() {
                       class="mini danger"
                       onClick={() => removeDraft(s.id)}
                     >
-                      Del
+                      Remove
                     </button>
                   </div>
                 </div>
@@ -3520,16 +3551,19 @@ export default function App() {
           </Show>
           </div>
 
-          <div class="settings-footer">
-            <button type="button" class="sheet-secondary" onClick={() => closeSettings()}>
-              Cancel
-            </button>
-            <button type="button" class="sheet-primary" onClick={() => saveSettings()}>
-              Save
+          <div class="settings-footer" data-corvu-no-drag>
+            <span class="settings-save-note" role="status">{settingsTab() === "general" ? "Saved automatically on this device" : settingsMsg() || "Changes stay on this device"}</span>
+            <Show when={settingsTab() === "shortcuts"}>
+              <button type="button" class="sheet-secondary" onClick={() => closeSettings()}>Cancel</button>
+            </Show>
+            <button type="button" class="sheet-primary" onClick={() => {
+              if (settingsTab() === "shortcuts") saveSettings();
+              closeSettings();
+            }}>
+              {settingsTab() === "general" ? "Done" : "Save changes"}
             </button>
           </div>
-        </div>
-      </Show>
+      </BottomSheet>
       <ContextMenuHost />
     </div>
   );

@@ -8,3 +8,4 @@ export { default as IconEmoji } from './f7_smiley';
 export { default as IconMic } from './f7_mic';
 export { default as IconKeyboard } from './Keyboard';
 export { default as IconTerminal } from './Terminal';
+export { default as IconImages } from './lucide_images';

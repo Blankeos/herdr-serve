@@ -41,7 +41,7 @@ Web (no `App.tsx`/`styles.css`/`api.ts` edits):
   module. `push.ts` owns SW registration, VAPID subscribe, authed fetch
   (same `herdr_serve_token` key, no `api.ts` import), support probing,
   `consumeAgentDeepLink()`. `PushSettings.tsx` is the mountable Solid
-  component (inline styles only): permission is requested ONLY from its
+  component (imports its own styles): permission is requested ONLY from its
   Enable button (user gesture, iOS-safe), with graceful
   unsupported/insecure-context UI and iOS Home-Screen guidance.
 

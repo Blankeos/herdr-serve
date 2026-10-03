@@ -1,0 +1,101 @@
+.settings-nav {
+  display: flex;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  padding: 0 1.75rem 0.85rem;
+  border-bottom: 1px solid rgb(255 255 255 / 0.07);
+}
+
+.settings-nav .sheet-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.settings-nav svg { width: 1rem; height: 1rem; }
+.settings-nav .sheet-tab:hover { background: rgb(255 255 255 / 0.04); }
+.settings-nav .sheet-tab.active { background: rgb(255 255 255 / 0.09); }
+
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a transparent;
+  padding: 1.5rem 1.75rem 2rem;
+  --scroll-fade-size: 32px;
+}
+
+.settings-section-heading { margin-bottom: 1.5rem; }
+.settings-section-heading h3 { margin: 0; font-size: 1.05rem; font-weight: 600; letter-spacing: -0.025em; }
+.settings-section-heading p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.83rem; line-height: 1.5; }
+.settings-general { gap: 1.5rem; }
+.settings-group { min-width: 0; }
+.settings-group + .settings-group { padding-top: 1.5rem; border-top: 1px solid rgb(255 255 255 / 0.07); }
+.settings-group h4 { margin: 0 0 0.45rem; font-size: 0.88rem; font-weight: 500; }
+.bottom-sheet .sheet-help { font-size: 0.81rem; line-height: 1.6; color: #aaa; text-wrap: pretty; }
+
+.settings-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.85rem; }
+.settings-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid #3c3c3c;
+  border-radius: 10px;
+  background: #2b2b2b;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms, border-color 160ms;
+}
+.settings-choice:hover { background: #303030; }
+.settings-choice[aria-pressed="true"] { border-color: #71829e; background: #2e3239; }
+.settings-choice strong { display: block; font-size: 0.85rem; font-weight: 500; }
+.settings-choice small { display: block; margin-top: 0.2rem; font-size: 0.75rem; color: var(--muted); line-height: 1.4; }
+.settings-choice-indicator { width: 1rem; height: 1rem; flex: 0 0 auto; border: 1px solid #676767; border-radius: 50%; }
+.settings-choice[aria-pressed="true"] .settings-choice-indicator { border: 4px solid var(--accent); }
+
+.bottom-sheet .field > span { font-size: 0.85rem; font-weight: 500; color: var(--text); text-transform: none; letter-spacing: inherit; }
+.bottom-sheet .field :is(input, select, textarea) { background: #2e2e2e; border-color: #424242; border-radius: 8px; }
+.bottom-sheet .field select { color-scheme: dark; cursor: pointer; }
+.bottom-sheet :is(.sheet-secondary, .mini, .mod, .chord-chip) { background: #303030; border-color: #424242; color: #d4d4d4; font-weight: 500; cursor: pointer; transition: background 160ms, color 160ms, border-color 160ms; }
+.bottom-sheet :is(.sheet-secondary, .mini, .mod, .chord-chip):hover:not(:disabled) { background: #393939; border-color: #555; color: var(--text); }
+.bottom-sheet :is(.sheet-primary, .sheet-secondary):active:not(:disabled) { transform: translateY(1px); }
+.bottom-sheet .sheet-secondary { width: auto; padding: 0.5rem 0.85rem; min-height: 2.25rem; font-size: 0.81rem; }
+.bottom-sheet .sheet-primary { width: auto; margin: 0; padding: 0.5rem 1rem; min-height: 2.25rem; border-color: #d8dce4; background: #d8dce4; color: #24262a; font-size: 0.81rem; font-weight: 600; transition: background 160ms; }
+.bottom-sheet .sheet-primary:hover { background: #eceef2; }
+.bottom-sheet .shortcut-list { gap: 0; border-radius: 10px; overflow: hidden; background: #2b2b2b; }
+.bottom-sheet .shortcut-row { padding: 0.8rem 0.6rem; border: 0; border-radius: 0; background: transparent; }
+.bottom-sheet .shortcut-row + .shortcut-row { border-top: 1px solid #373737; }
+.bottom-sheet .shortcut-row.editing { background: #323944; }
+.bottom-sheet .shortcut-label { font-weight: 500; }
+.bottom-sheet .shortcut-chords { margin-top: 0.2rem; }
+.bottom-sheet .shortcut-actions .mini { border: 0; background: transparent; padding: 0.45rem 0.5rem; min-height: 2rem; }
+.bottom-sheet .mini.danger { color: #d6a6a3; }
+.bottom-sheet .editor { margin-top: 1rem; padding: 1rem; background: #2c2c2c; border-color: #404040; border-radius: 10px; }
+.bottom-sheet .letter-grid { gap: 0.35rem; }
+.bottom-sheet .mini.letter { min-height: 2rem; }
+.bottom-sheet .mod.active { background: #3a465a; border-color: #71829e; }
+.bottom-sheet .settings-reset { width: auto; margin-top: 0.75rem; color: var(--muted); background: transparent; border-color: transparent; }
+.bottom-sheet :is(.io summary, .settings-diagnostics summary) { color: #c2c2c2; font-size: 0.85rem; cursor: pointer; }
+.settings-diagnostics[open] summary { margin-bottom: 0.75rem; }
+.settings-diagnostics .sheet-secondary { margin-top: 0.75rem; margin-right: 0.5rem; }
+.bottom-sheet .settings-footer { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.75rem calc(1rem + var(--safe-bottom)); border-top: 1px solid rgb(255 255 255 / 0.07); background: var(--settings-surface); }
+.settings-save-note { margin-right: auto; color: var(--muted); font-size: 0.75rem; line-height: 1.4; max-width: 55%; }
+
+@media (max-width: 767.98px) {
+  .settings-nav { padding-inline: 1.25rem; }
+  .settings-body { padding: 1.25rem 1.25rem 2rem; }
+  .bottom-sheet .settings-footer { padding-inline: 1.25rem; }
+  .settings-choices { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bottom-sheet :is(button, input, select, textarea) { transition: none; }
+}
