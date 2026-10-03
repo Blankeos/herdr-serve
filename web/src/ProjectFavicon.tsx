@@ -9,6 +9,7 @@ export function ProjectFavicon(props: {
   cwd: string;
   label?: string;
   class?: string;
+  running?: boolean;
 }) {
   const src = () => {
     const cwd = props.cwd.trim();
@@ -32,29 +33,34 @@ export function ProjectFavicon(props: {
   const showLetter = () => status() !== "loaded";
 
   return (
-    <span class={`project-favicon${props.class ? ` ${props.class}` : ""}`}>
-      <Show when={showLetter()}>
-        <span class="project-favicon-letter" aria-hidden="true">
-          {letter()}
-        </span>
+    <span class="project-favicon-wrap">
+      <Show when={props.running}>
+        <span class="project-favicon-ping" aria-hidden="true" />
       </Show>
-      <Show when={src()}>
-        {(url) => (
-          <img
-            src={url()}
-            alt=""
-            class="project-favicon-img"
-            classList={{ "project-favicon-img-hidden": status() !== "loaded" }}
-            onLoad={() => {
-              const currentSrc = src();
-              if (!currentSrc) return;
-              loadedProjectFaviconSrcs.add(currentSrc);
-              setStatus("loaded");
-            }}
-            onError={() => setStatus("error")}
-          />
-        )}
-      </Show>
+      <span class={`project-favicon${props.class ? ` ${props.class}` : ""}`}>
+        <Show when={showLetter()}>
+          <span class="project-favicon-letter" aria-hidden="true">
+            {letter()}
+          </span>
+        </Show>
+        <Show when={src()}>
+          {(url) => (
+            <img
+              src={url()}
+              alt=""
+              class="project-favicon-img"
+              classList={{ "project-favicon-img-hidden": status() !== "loaded" }}
+              onLoad={() => {
+                const currentSrc = src();
+                if (!currentSrc) return;
+                loadedProjectFaviconSrcs.add(currentSrc);
+                setStatus("loaded");
+              }}
+              onError={() => setStatus("error")}
+            />
+          )}
+        </Show>
+      </span>
     </span>
   );
 }

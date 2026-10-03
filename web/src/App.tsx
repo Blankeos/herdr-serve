@@ -47,8 +47,11 @@ import {
   suggestLabel,
 } from "./shortcuts";
 import { loadScrollMode, saveScrollMode, scrollKeyBytes, type ScrollMode } from "./scrollPrefs";
+import { loadSelectedTerminal, saveSelectedTerminal, resolveInitialTerminal } from "./terminalSelection";
 import { encodeSgrClick, encodeSgrWheelLines } from "./mouseWheel";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { terminalPreview } from "./lib/terminal/preview";
+import { manageDialogFocus } from "./lib/dialog-focus";
 import { IconSettings, IconCaretDown, IconKeyboard, IconTerminal } from "./icons";
 import {
   SoftKeyboard,
@@ -213,7 +216,11 @@ function prepareMobileInput(term: Terminal) {
 
 export default function App() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
-  const [selected, setSelected] = createSignal(""); // terminal_id
+  const [selected, setSelectedSignal] = createSignal(""); // terminal_id
+  const setSelected = (id: string) => {
+    saveSelectedTerminal(id);
+    setSelectedSignal(id);
+  };
   const [error, setError] = createSignal("");
   const [conn, setConn] = createSignal<
     "idle" | "connecting" | "live" | "dead" | "detached"
@@ -236,6 +243,14 @@ export default function App() {
   const [rightOpen, setRightOpen] = createSignal(false);
   const [rightDragging, setRightDragging] = createSignal(false);
   const [rightX, setRightX] = createSignal(0);
+  const [panAnimating, setPanAnimating] = createSignal(false);
+  const [pendingPreview, setPendingPreview] = createSignal(false);
+  const [agentPreview, setAgentPreview] = createSignal<HTMLElement | null>(null);
+  const [shellPreview, setShellPreview] = createSignal<HTMLElement | null>(null);
+  const previewCache = new Map<string, HTMLElement>();
+  let panTimer: number | undefined;
+  let agentDialog: HTMLFormElement | undefined;
+  let workspaceDialog: HTMLFormElement | undefined;
   const [lastAgentId, setLastAgentId] = createSignal("");
   const [lastShellId, setLastShellId] = createSignal("");
   let swipeLock = false; // blocks xterm click/SGR while scrubbing pages/drawer
@@ -545,16 +560,20 @@ export default function App() {
         return;
       }
       if (ev.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(ev.data));
+        term.write(new Uint8Array(ev.data), () => {
+          if (socket === ws) setPendingPreview(false);
+        });
         return;
       }
     };
 
     ws.onerror = () => {
+      setPendingPreview(false);
       setError("relay error");
     };
 
     ws.onclose = (ev) => {
+      if (socket === ws) setPendingPreview(false);
       if (liveSocket === ws) setLiveSocket(undefined);
       socket = undefined;
       if (selected() !== termID || activeTermID !== termID) {
@@ -654,6 +673,44 @@ export default function App() {
   } catch {
     pendingDeepLink = null;
   }
+  let pendingRestore = loadSelectedTerminal();
+  let agentsLoaded = false;
+  let panesLoaded = false;
+  const restoreSelection = () => {
+    // Explicit notification links take precedence over browser memory.
+    if (pendingDeepLink) {
+      const match = agents().find(
+        (a) => a.terminal_id === pendingDeepLink || a.pane_id === pendingDeepLink,
+      );
+      if (match) {
+        pendingDeepLink = null;
+        pendingRestore = "";
+        setRightOpen(false);
+        setRightX(0);
+        setSelected(match.terminal_id || match.pane_id);
+        return;
+      }
+    }
+    if (selected()) return;
+    const match = resolveInitialTerminal(
+      agentsLoaded ? agents() : null,
+      panesLoaded ? panes() : null,
+      pendingRestore,
+    );
+    if (match === undefined) return;
+    pendingRestore = "";
+    if (!match) {
+      saveSelectedTerminal("");
+      return;
+    }
+    const id = match.terminal_id || match.pane_id;
+    if (!(match.agent || "").trim()) {
+      setLastShellId(id);
+      setRightOpen(true);
+      setRightX(pageWidth());
+    }
+    setSelected(id);
+  };
   let agentsInFlight = false;
   let agentsFails = 0;
   const refreshAgents = async (silent = false): Promise<boolean> => {
@@ -670,23 +727,8 @@ export default function App() {
         changed = next !== prev;
         return next;
       });
-      if (pendingDeepLink) {
-        const match = list.find(
-          (a) =>
-            a.terminal_id === pendingDeepLink ||
-            a.pane_id === pendingDeepLink,
-        );
-        if (match) {
-          setSelected(match.terminal_id || match.pane_id);
-          pendingDeepLink = null;
-        } else if (!selected() && list.length) {
-          const focused = list.find((a) => a.focused) ?? list[0];
-          setSelected(focused.terminal_id || focused.pane_id);
-        }
-      } else if (!selected() && list.length) {
-        const focused = list.find((a) => a.focused) ?? list[0];
-        setSelected(focused.terminal_id || focused.pane_id);
-      }
+      agentsLoaded = true;
+      restoreSelection();
     } catch (e) {
       // Keep last-good list on transient poll failures; surface error only
       // after repeated failures so the banner doesn't flash the layout.
@@ -759,6 +801,8 @@ export default function App() {
         changed = next !== prev;
         return next;
       });
+      panesLoaded = true;
+      restoreSelection();
     } catch (e) {
       if (!silent || ++panesFails >= 3) {
         setError(e instanceof Error ? e.message : String(e));
@@ -1107,6 +1151,9 @@ export default function App() {
   };
 
   const selectAgent = (id: string) => {
+    // An explicit selection wins over any still-pending startup restoration.
+    pendingRestore = "";
+    pendingDeepLink = null;
     setSelected(id);
     // No status refresh here: selection highlight is client-side, and a
     // refresh execs `herdr` right as the new takeover stream connects.
@@ -1138,7 +1185,9 @@ export default function App() {
     setError("");
   };
 
-  const cancelCreateAgent = () => setCreateAgentOpen(false);
+  const cancelCreateAgent = () => {
+    if (!creating()) setCreateAgentOpen(false);
+  };
 
   const submitCreateAgent = async () => {
     const workspaceId = createAgentWsId();
@@ -1193,6 +1242,7 @@ export default function App() {
   };
 
   const cancelCreateWorkspace = () => {
+    if (creatingWs()) return;
     setCreateWsOpen(false);
     setCreateWsLabel("");
     setCreateWsPath("");
@@ -1213,7 +1263,7 @@ export default function App() {
         label: createWsLabel().trim() || undefined,
         focus: true,
       });
-      cancelCreateWorkspace();
+      setCreateWsOpen(false);
       scheduleStatusRefresh(200);
       await Promise.all([
         refreshWorkspaces(true),
@@ -1276,7 +1326,32 @@ export default function App() {
     }
   };
 
+  const capturePanPreviews = () => {
+    if (!isMobile() || !term) return;
+    if (!pendingPreview()) {
+      const snapshot = terminalPreview(term);
+      if (snapshot) previewCache.set(selected(), snapshot);
+    }
+    // Keep the cache bounded when agents are closed and recreated.
+    if (previewCache.size > 16) previewCache.delete(previewCache.keys().next().value!);
+    const agent = rightOpen() ? lastAgentId() : selected();
+    const shells = focusedShells();
+    const rememberedShell = shells.find((p) => agentId(p) === lastShellId()) || shells.find((p) => p.focused) || shells[0];
+    const shell = rightOpen() ? selected() : rememberedShell ? agentId(rememberedShell) : "";
+    setAgentPreview(previewCache.get(agent) || null);
+    setShellPreview(previewCache.get(shell) || null);
+  };
+
+  const settlePan = () => {
+    if (!isMobile()) return;
+    setPanAnimating(true);
+    if (panTimer !== undefined) clearTimeout(panTimer);
+    panTimer = window.setTimeout(() => setPanAnimating(false), 260);
+  };
+
   const openRight = () => {
+    if (!rightDragging() && !panAnimating()) capturePanPreviews();
+    settlePan();
     // Remember the agent so swipe-back restores it.
     const cur = selected();
     if (cur) {
@@ -1287,11 +1362,18 @@ export default function App() {
     setDrawerDragging(false);
     setDrawerX(0);
     setRightOpen(true);
+    setRightDragging(false);
     setRightX(pageWidth());
-    void refreshPanes(true).then(() => focusRememberedShell());
+    // Use known panes immediately; refreshing must not delay the page pan.
+    focusRememberedShell();
+    void refreshPanes(true).then(() => {
+      if (rightOpen()) focusRememberedShell();
+    });
   };
 
   const closeRight = () => {
+    if (!rightDragging() && !panAnimating()) capturePanPreviews();
+    settlePan();
     setRightOpen(false);
     setRightDragging(false);
     setRightX(0);
@@ -1997,6 +2079,14 @@ export default function App() {
     // (which was leaking SGR mouse sequences like `0;31;27M` into the shell).
     type ScrubMode = "none" | "left" | "right";
     let scrubMode: ScrubMode = "none";
+    let suppressSwipeClickUntil = 0;
+    const blockSwipeClick = (event: MouseEvent) => {
+      if (event.detail > 0 && performance.now() < suppressSwipeClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("click", blockSwipeClick, true);
 
     const gesture = new DragGesture(
       document.documentElement,
@@ -2010,7 +2100,7 @@ export default function App() {
         intentional,
         first,
       }) => {
-        if (!mq.matches || settingsOpen()) {
+        if (!mq.matches || settingsOpen() || createAgentOpen() || createWsOpen()) {
           cancel();
           scrubMode = "none";
           swipeLock = false;
@@ -2019,7 +2109,7 @@ export default function App() {
         const target = event?.target as Element | null;
         if (
           target?.closest(
-            ".sidebar, .right-panel, .sheet, .sheet-backdrop, .inline-create, .inline-create-ws, .soft-keyboard, .dock, .terminals-chips, input, textarea, select",
+            ".sidebar, .sheet, .sheet-backdrop, .dialog-panel, .dialog-overlay, .inline-create, .inline-create-ws, .soft-keyboard, .dock, .terminals-chips, button, input, textarea, select",
           )
         ) {
           cancel();
@@ -2050,6 +2140,7 @@ export default function App() {
 
         if (scrubMode === "none") {
           if (!intentional) return;
+        suppressSwipeClickUntil = performance.now() + 350;
           cancel();
           return;
         }
@@ -2103,6 +2194,7 @@ export default function App() {
           swipeLock = true;
           event?.preventDefault?.();
           if (!rightDragging()) {
+            capturePanPreviews();
             const cur = selected();
             if (cur && agents().some((a) => agentId(a) === cur)) {
               setLastAgentId(cur);
@@ -2114,7 +2206,6 @@ export default function App() {
           return;
         }
 
-        setRightDragging(false);
         swipeLock = false;
         scrubMode = "none";
         const flickOpen = vx > 0.45 && dx < 0; // flick left → open Terminals
@@ -2130,9 +2221,9 @@ export default function App() {
       },
       {
         axis: "x",
-        filterTaps: true,
+        filterTaps: false,
         threshold: 12,
-        pointer: { touch: true },
+        pointer: { touch: true, keys: false },
         eventOptions: { passive: false },
       },
     );
@@ -2188,9 +2279,11 @@ export default function App() {
 
     onCleanup(() => {
       stopFling();
+      if (panTimer !== undefined) clearTimeout(panTimer);
       if (statusRefreshTimer !== undefined) clearTimeout(statusRefreshTimer);
       mq.removeEventListener("change", onMq);
       gesture.destroy();
+      document.removeEventListener("click", blockSwipeClick, true);
       keybarGesture?.destroy();
       dictation?.stop();
       document.removeEventListener("gesturestart", blockGesture);
@@ -2235,6 +2328,9 @@ export default function App() {
 
   createEffect(() => {
     const id = selected();
+    if (isMobile() && (rightDragging() || panAnimating()) && id !== activeTermID) {
+      setPendingPreview(true);
+    }
     if (!authReady() || authRequired()) {
       disconnect();
       return;
@@ -2277,11 +2373,28 @@ export default function App() {
     );
   };
 
+  createEffect(() => {
+    const panel = createAgentOpen() ? agentDialog : createWsOpen() ? workspaceDialog : undefined;
+    if (!panel) return;
+    const cleanup = manageDialogFocus(panel, () => {
+      if (createAgentOpen()) cancelCreateAgent();
+      else cancelCreateWorkspace();
+    });
+    onCleanup(cleanup);
+  });
+
   // Left drawer + right Terminals scrub share one transform pair.
-  // Terminal counters the right slide so it stays on-screen while chrome scrubs.
+  // The live host stays mounted; cached viewports pan with the peer-page chrome.
   // Desktop skips --right-x: chips render under the Agents topbar instead.
   const shellStyle = () => {
     const style: Record<string, string> = {};
+    const panProgress = isMobile()
+      ? rightDragging()
+        ? Math.min(1, Math.max(0, rightX() / pageWidth()))
+        : rightOpen() ? 1 : 0
+      : 0;
+    style["--agent-preview-blur"] = `${panProgress * 8}px`;
+    style["--shell-preview-blur"] = `${(1 - panProgress) * 8}px`;
     if (drawerDragging()) style["--drawer-x"] = `${drawerX()}px`;
     else if (drawerOpen()) style["--drawer-x"] = `${SIDEBAR_W}px`;
     else style["--drawer-x"] = "0px";
@@ -2420,7 +2533,8 @@ export default function App() {
                     <div class="workspace-header">
                       <button
                         type="button"
-                        class="workspace-toggle"
+                          class="workspace-toggle"
+                          aria-expanded={open()}
                         onClick={() => toggleWorkspace(g.id)}
                         onContextMenu={wsMenu?.onContextMenu}
                         onTouchStart={wsMenu?.onTouchStart}
@@ -2431,9 +2545,11 @@ export default function App() {
                         <span class="workspace-chevron" aria-hidden="true">
                           <IconCaretDown class="workspace-chevron-icon" />
                         </span>
-                        <Show when={g.cwd}>
-                          <ProjectFavicon cwd={g.cwd} label={g.label} />
-                        </Show>
+                        <ProjectFavicon
+                          cwd={g.cwd || ""}
+                          label={g.label}
+                          running={g.agents.some((a) => a.agent_status === "working")}
+                        />
                         <span class="workspace-name">{g.label}</span>
                         <span class="workspace-count">{g.agents.length}</span>
                       </button>
@@ -2675,6 +2791,9 @@ export default function App() {
             </button>
             <div class="topbar-title-row">
               <div class="topbar-title">Agents</div>
+              <Show when={current()}>
+                {(a) => <span class="topbar-context">{liveAgentWorkspace(a())} / {agentLabel(a())}</span>}
+              </Show>
               <button
                 type="button"
                 class="topbar-add"
@@ -2682,7 +2801,7 @@ export default function App() {
                 title="New agent"
                 onClick={(e) => openCreateAgent(undefined, e)}
               >
-                +
+                +<span class="topbar-add-label">New agent</span>
               </button>
             </div>
             <div class="top-right">
@@ -2727,12 +2846,30 @@ export default function App() {
             <div class="error">{error()}</div>
           </Show>
 
-          {/*
-            Terminal stays put: .term-wrap counters --right-x so Agents chrome
-            and the Terminals panel scrub past a stationary terminal.
-          */}
-          <div class="term-wrap">
+          <div class="term-wrap" classList={{ "terminal-panning": isMobile() && (rightDragging() || panAnimating() || pendingPreview()) }}>
             <div class="term" ref={termHost} />
+            <Show when={isMobile() && (rightDragging() || panAnimating() || pendingPreview())}>
+              <div class="terminal-preview terminal-preview-agent" aria-hidden="true">
+                <Show when={agentPreview()} fallback={<div class="terminal-preview-empty">Your agent terminal</div>}>
+                  {(snapshot) => <div class="terminal-preview-screen">{snapshot().cloneNode(true)}</div>}
+                </Show>
+              </div>
+              <div class="terminal-preview terminal-preview-shell" aria-hidden="true">
+                <Show when={shellPreview()} fallback={<div class="terminal-preview-empty"><IconTerminal class="terminal-preview-icon" /><span>{focusedShells().length ? "Opening terminal…" : "No terminals yet"}</span><small>{focusedShells().length ? "Your shell will appear here." : "Tap + above to start a shell."}</small></div>}>
+                  {(snapshot) => <div class="terminal-preview-screen">{snapshot().cloneNode(true)}</div>}
+                </Show>
+              </div>
+            </Show>
+            <Show when={!selected()}>
+              <div class="terminal-empty">
+                <IconTerminal class="terminal-empty-icon" />
+                <h1>Your workspace, anywhere.</h1>
+                <p>Select an agent to connect to its live terminal,<br />or create one to get started.</p>
+                <button type="button" class="sheet-primary" onClick={(e) => workspaces().length ? openCreateAgent(undefined, e) : openCreateWorkspace()}>
+                  {workspaces().length ? "New agent" : "New workspace"}
+                </button>
+              </div>
+            </Show>
           </div>
 
           <nav class="dock" aria-label="Shortcut keys" ref={dockEl}>
@@ -2846,6 +2983,8 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label="New workspace"
+          ref={workspaceDialog}
+          tabindex="-1"
           onSubmit={(e) => {
             e.preventDefault();
             void submitCreateWorkspace();
@@ -2906,13 +3045,20 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label="New agent"
+          ref={agentDialog}
+          tabindex="-1"
           onSubmit={(e) => {
             e.preventDefault();
             void submitCreateAgent();
           }}
         >
           <div class="dialog-head">
-            <div class="dialog-title">New agent</div>
+            <div>
+              <div class="dialog-title">New agent</div>
+              <p class="dialog-sub">
+                Pick a provider, choose a workspace, and name your agent.
+              </p>
+            </div>
             <button
               type="button"
               class="sheet-close"
@@ -2921,10 +3067,17 @@ export default function App() {
               Close
             </button>
           </div>
+          <Show when={error()}>
+            <p class="dialog-error" role="alert">
+              {error()}
+            </p>
+          </Show>
           <label class="field">
             <span>Workspace</span>
             <select
               value={createAgentWsId()}
+              disabled={creating()}
+              onFocus={(e) => e.preventDefault()}
               onChange={(e) => setCreateAgentWsId(e.currentTarget.value)}
             >
               <For each={workspaces()}>
@@ -2937,14 +3090,16 @@ export default function App() {
             </select>
           </label>
           <div class="field">
-            <span>Agent</span>
-            <div class="kind-row">
+            <span>Provider</span>
+            <div class="kind-row" role="group" aria-label="Provider">
               <For each={[...AGENT_KINDS]}>
                 {(k) => (
                   <button
                     type="button"
                     class="kind"
                     classList={{ active: createKind() === k.id }}
+                    aria-pressed={createKind() === k.id}
+                    disabled={creating()}
                     onClick={() => {
                       setCreateKind(k.id);
                       if (
@@ -2967,6 +3122,7 @@ export default function App() {
               type="text"
               value={createLabel()}
               placeholder={createKind()}
+              disabled={creating()}
               onInput={(e) => setCreateLabel(e.currentTarget.value)}
             />
           </label>
@@ -2980,7 +3136,7 @@ export default function App() {
               Cancel
             </button>
             <button type="submit" class="sheet-primary" disabled={creating()}>
-              {creating() ? "Creating…" : "Create"}
+              {creating() ? "Creating…" : "Create agent"}
             </button>
           </div>
         </form>

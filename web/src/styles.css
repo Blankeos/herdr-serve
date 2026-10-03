@@ -7,16 +7,17 @@
   /* Keep app chrome dark via tokens, but allow system prefers-color-scheme
      so the soft keyboard can follow iOS light/dark. */
   color-scheme: dark light;
-  --bg: #151515;
-  --panel: #1c1c1c;
-  --border: #2a2a2a;
-  --text: #ececec;
-  --muted: #8a8a8a;
-  --accent: #6c8ed8;
+  --bg: #171717;
+  --panel: #1e1e1e;
+  --border: #2c2c2c;
+  --text: #ededed;
+  --muted: #9c9c9c;
+  /* Restrained pale blue — used sparingly for focus / active states. */
+  --accent: #9db4e0;
   --good: #6aa84f;
   --warn: #e0a800;
   --bad: #d9534f;
-  --working: #6c8ed8;
+  --working: #9db4e0;
   --idle: #7a7a7a;
   --done: #5f8f6a;
   --blocked: #e0a800;
@@ -207,17 +208,18 @@ textarea {
 
 .icon-btn {
   border: 1px solid var(--border);
-  background: #121212;
+  background: #1a1a1a;
   color: var(--muted);
-  border-radius: 0.35rem;
-  width: 1.7rem;
-  height: 1.7rem;
+  border-radius: 0.45rem;
+  width: 2rem;
+  height: 2rem;
   padding: 0;
   display: grid;
   place-items: center;
   font-size: 0.95rem;
   line-height: 1;
   flex: 0 0 auto;
+  cursor: pointer;
 }
 
 .icon-btn:active {
@@ -234,13 +236,13 @@ textarea {
 
 .conn,
 .status {
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.14rem 0.4rem;
+  letter-spacing: 0.06em;
+  padding: 0.22rem 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 0.28rem;
-  background: #141414;
+  border-radius: 999px;
+  background: #1a1a1a;
 }
 
 .conn {
@@ -267,18 +269,18 @@ textarea {
 
 .reclaim-btn {
   border: 1px solid var(--border);
-  background: #1a1a1a;
+  background: #222222;
   color: var(--text);
-  border-radius: 0.28rem;
-  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
   font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   cursor: pointer;
 }
 
 .reclaim-btn:hover {
-  background: #222;
+  background: #2a2a2a;
 }
 
 .status {
@@ -558,7 +560,8 @@ textarea {
 .dock {
   border-top: 1px solid var(--border);
   background: var(--panel);
-  padding: 0.35rem 0.35rem calc(0.35rem + var(--safe-bottom));
+  background: #1e1e1e;
+  padding: 0.45rem 0.5rem calc(0.45rem + var(--safe-bottom));
   touch-action: pan-x;
 }
 
@@ -613,13 +616,13 @@ textarea {
 .keychip {
   flex: 0 0 auto;
   border: 1px solid var(--border);
-  background: #121212;
+  background: #1a1a1a;
   color: var(--text);
-  border-radius: 0.35rem;
-  padding: 0.45rem 0.65rem;
+  border-radius: 0.45rem;
+  padding: 0.55rem 0.75rem;
   font-size: 0.78rem;
   font-family: var(--font-mono);
-  min-height: 2.1rem;
+  min-height: 2.4rem;
 }
 
 .keychip:disabled {
@@ -657,29 +660,49 @@ textarea {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: min(calc(100vw - 2rem), 24rem);
-  max-height: min(90dvh, 32rem);
+  width: min(calc(100vw - 2rem), 25rem);
+  max-height: min(90dvh, 34rem);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  padding: 1rem;
+  gap: 0.9rem;
+  padding: 1.15rem 1.15rem 1.1rem;
   border: 1px solid var(--border);
-  border-radius: 0.85rem;
-  background: #1a1a1a;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+  background: #1e1e1e;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .dialog-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
 .dialog-title {
   font-weight: 650;
-  font-size: 1rem;
+  font-size: 1.02rem;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.dialog-sub {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.dialog-error {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--bad) 14%, #1a1a1a);
+  border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--border));
+  color: #ffb4b0;
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
 .dialog-panel .field {
@@ -689,8 +712,8 @@ textarea {
 .dialog-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  margin-top: 0.2rem;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
 }
 
 .dialog-actions .sheet-primary,
@@ -769,23 +792,31 @@ textarea {
 
 .sheet-close {
   border: 1px solid var(--border);
-  background: #121212;
-  border-radius: 0.35rem;
-  padding: 0.28rem 0.55rem;
+  background: #1a1a1a;
+  border-radius: 0.45rem;
+  padding: 0.4rem 0.65rem;
   font-size: 0.78rem;
   color: var(--muted);
+  min-height: 2rem;
+  cursor: pointer;
+}
+
+.sheet-close:hover {
+  color: var(--text);
+  border-color: #3a3a3a;
 }
 
 .field {
   display: grid;
-  gap: 0.35rem;
-  margin-bottom: 0.8rem;
+  gap: 0.45rem;
+  margin-bottom: 0.9rem;
 }
 
 .field > span {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
 
@@ -793,50 +824,85 @@ textarea {
 .field select {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 0.35rem;
-  background: #101010;
-  padding: 0.55rem 0.65rem;
+  border-radius: 0.5rem;
+  background: #161616;
+  padding: 0.65rem 0.7rem;
+  min-height: 2.5rem;
+  font-size: 0.86rem;
   outline: none;
 }
 
 .field input:focus,
 .field select:focus {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.field input:disabled,
+.field select:disabled {
+  opacity: 0.6;
 }
 
 .kind-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
 }
 
 .kind {
   border: 1px solid var(--border);
-  background: #121212;
-  border-radius: 0.35rem;
-  padding: 0.35rem 0.55rem;
-  font-size: 0.78rem;
+  background: #1a1a1a;
+  color: var(--muted);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.5rem;
+  min-height: 2.5rem;
+  font-size: 0.8rem;
+  font-weight: 550;
+  cursor: pointer;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kind:hover {
+  color: var(--text);
+  border-color: #3a3a3a;
 }
 
 .kind.active {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 14%, #121212);
-  color: #d8e4ff;
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, #1a1a1a);
+  color: #e4ebfb;
+}
+
+.kind:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.kind:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .sheet-primary {
   width: 100%;
   margin-top: 0.25rem;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 22%, #121212);
-  color: #e8eeff;
-  border-radius: 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 20%, #1a1a1a);
+  color: #eaf0fd;
+  border-radius: 0.5rem;
   padding: 0.7rem 0.8rem;
+  min-height: 2.5rem;
   font-weight: 650;
+  font-size: 0.86rem;
+  cursor: pointer;
 }
 
 .sheet-primary:disabled {
   opacity: 0.55;
+  cursor: default;
 }
 
 .sheet-tall {
@@ -903,11 +969,23 @@ textarea {
 
 .sheet-secondary {
   border: 1px solid var(--border);
-  background: #121212;
+  background: #1a1a1a;
   color: var(--text);
-  border-radius: 0.4rem;
-  padding: 0.55rem 0.75rem;
-  font-size: 0.82rem;
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  min-height: 2.5rem;
+  font-size: 0.84rem;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.sheet-secondary:hover {
+  border-color: #3a3a3a;
+}
+
+.sheet-secondary:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .sheet-secondary.listening {
@@ -1043,7 +1121,8 @@ textarea {
 .empty-inline,
 .muted-inline {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .editor {
@@ -1190,7 +1269,7 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #141414;
+  background: #1a1a1a;
   border-right: 1px solid var(--border);
   z-index: 30;
   will-change: transform;
@@ -1200,7 +1279,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
-  padding: 0.85rem 0.9rem 0.75rem;
+  padding: 0.9rem 0.9rem 0.8rem;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
@@ -1249,7 +1328,7 @@ textarea {
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 0.45rem 0.4rem 0.75rem;
+  padding: 0.55rem 0.5rem 0.85rem;
   scrollbar-width: thin;
   scrollbar-color: #2e2e2e transparent;
 }
@@ -1263,7 +1342,7 @@ textarea {
   flex-direction: column;
   min-width: 0;
   border-top: 1px solid var(--border);
-  background: #141414;
+  background: #1a1a1a;
 }
 
 .sidebar-section-head {
@@ -1272,14 +1351,14 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.55rem 0.65rem 0.35rem;
+  padding: 0.6rem 0.65rem 0.4rem;
 }
 
 .sidebar-section-title {
-  font-size: 0.68rem;
+  font-size: 0.67rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   color: var(--muted);
 }
 
@@ -1409,7 +1488,7 @@ textarea {
 }
 
 .sidebar-agents .agent-row {
-  padding-left: 0.45rem;
+  padding: 0.45rem 0.5rem;
 }
 
 .agent-row-ws {
@@ -1424,12 +1503,12 @@ textarea {
 }
 
 .sidebar-agents .empty-inline {
-  padding: 0.2rem 0.45rem;
+  padding: 0.45rem 0.5rem;
 }
 
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: 0.55rem 0.65rem calc(0.55rem + var(--safe-bottom));
+  padding: 0.6rem 0.65rem calc(0.6rem + var(--safe-bottom));
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -1442,9 +1521,10 @@ textarea {
   align-items: center;
   gap: 0.55rem;
   width: 100%;
-  padding: 0.45rem 0.55rem;
+  padding: 0.55rem 0.6rem;
+  min-height: 2.4rem;
   border: 0;
-  border-radius: 0.4rem;
+  border-radius: 0.5rem;
   background: transparent;
   color: var(--muted);
   font-size: 0.82rem;
@@ -1473,6 +1553,42 @@ textarea {
 
 .workspace {
   margin-bottom: 0.2rem;
+}
+
+.project-favicon-wrap {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  border-radius: 0.3rem;
+}
+
+.project-favicon-ping {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--working);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: project-favicon-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes project-favicon-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  75%,
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-favicon-ping {
+    animation: none;
+    transform: scale(1.15);
+    opacity: 0.65;
+  }
 }
 
 .project-favicon {
@@ -1517,8 +1633,8 @@ textarea {
   align-items: center;
   gap: 0.2rem;
   width: 100%;
-  padding: 0.15rem 0.35rem 0.15rem 0.2rem;
-  min-height: 2rem;
+  padding: 0.2rem 0.4rem 0.2rem 0.25rem;
+  min-height: 2.25rem;
 }
 
 .workspace-toggle {
@@ -1531,8 +1647,8 @@ textarea {
   background: transparent;
   color: var(--text);
   text-align: left;
-  padding: 0.35rem 0.25rem;
-  border-radius: 0.4rem;
+  padding: 0.4rem 0.3rem;
+  border-radius: 0.5rem;
   cursor: pointer;
   font: inherit;
   font-weight: 500;
@@ -1585,20 +1701,21 @@ textarea {
   font-size: 0.65rem;
   font-weight: 500;
   color: var(--muted);
-  padding: 0.05rem 0.3rem;
+  padding: 0.1rem 0.35rem;
   border-radius: 999px;
-  background: #1a1a1a;
+  background: #222222;
   border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
 }
 
 .workspace-add {
   flex: 0 0 auto;
-  width: 1.35rem;
-  height: 1.35rem;
+  width: 1.75rem;
+  height: 1.75rem;
   display: grid;
   place-items: center;
   border: 1px solid transparent;
-  border-radius: 0.3rem;
+  border-radius: 0.45rem;
   background: transparent;
   color: var(--muted);
   font-size: 0.95rem;
@@ -1611,16 +1728,24 @@ textarea {
 .workspace-add:active {
   color: var(--text);
   border-color: var(--border);
-  background: #1a1a1a;
+  background: #262626;
 }
 
 .workspace-body {
   display: none;
-  padding: 0.1rem 0 0.35rem 0.15rem;
+  position: relative;
+  margin: 0 0.35rem 0.35rem 1.05rem;
+  padding: 0.15rem 0 0.15rem 0.7rem;
+  border-left: 1px solid color-mix(in srgb, #fff 8%, transparent);
 }
 
 .workspace.open .workspace-body {
   display: block;
+}
+
+.workspace-body .empty-inline {
+  /* Match the child label, including its status-dot column and border. */
+  padding: 0.45rem 0.5rem 0.45rem calc(0.5rem + 0.5rem + 0.45rem + 1px);
 }
 
 .agent-row {
@@ -1628,10 +1753,11 @@ textarea {
   align-items: center;
   gap: 0.45rem;
   width: 100%;
-  padding: 0.38rem 0.45rem 0.38rem 1.55rem;
-  margin: 0.05rem 0;
+  padding: 0.45rem 0.5rem;
+  margin: 0.1rem 0;
+  min-height: 2.25rem;
   border: 1px solid transparent;
-  border-radius: 0.4rem;
+  border-radius: 0.5rem;
   background: transparent;
   color: var(--text);
   cursor: pointer;
@@ -1641,12 +1767,12 @@ textarea {
 }
 
 .agent-row:hover {
-  background: color-mix(in srgb, #fff 4.5%, transparent);
+  background: color-mix(in srgb, #fff 5%, transparent);
 }
 
 .agent-row.active {
-  background: color-mix(in srgb, var(--accent) 12%, #161616);
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, #1a1a1a);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 
 .agent-row .dot-wrap {
@@ -1795,18 +1921,18 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.55rem;
-  padding: 0.32rem 0.55rem;
+  gap: 0.6rem;
+  padding: 0.45rem 0.65rem;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: #1e1e1e;
   flex: 0 0 auto;
-  min-height: 2.25rem;
+  min-height: 2.5rem;
 }
 
 .topbar-title {
   flex: 0 1 auto;
   min-width: 0;
-  font-size: 0.88rem;
+  font-size: 0.9rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
@@ -1820,20 +1946,20 @@ textarea {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.45rem;
 }
 
 .topbar-add {
   flex: 0 0 auto;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 2rem;
+  height: 2rem;
   display: grid;
   place-items: center;
   border: 1px solid transparent;
-  border-radius: 0.35rem;
+  border-radius: 0.45rem;
   background: transparent;
   color: var(--muted);
-  font-size: 1rem;
+  font-size: 1.05rem;
   line-height: 1;
   padding: 0;
   cursor: pointer;
@@ -1843,7 +1969,7 @@ textarea {
 .topbar-add:active {
   color: var(--text);
   border-color: var(--border);
-  background: #1a1a1a;
+  background: #262626;
 }
 
 .topbar .top-right {
@@ -1851,11 +1977,11 @@ textarea {
 }
 
 .topbar-icon-btn {
-  width: 1.85rem;
-  height: 1.85rem;
+  width: 2rem;
+  height: 2rem;
   display: grid;
   place-items: center;
-  border-radius: 0.35rem;
+  border-radius: 0.45rem;
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -1869,7 +1995,7 @@ textarea {
 .topbar-icon-btn.active {
   color: var(--text);
   border-color: var(--border);
-  background: #1a1a1a;
+  background: #262626;
 }
 
 .topbar-icon {
@@ -1985,11 +2111,9 @@ textarea {
     --right-x: 100vw;
   }
 
-  /* Only clear the chips row — Agents topbar still occupies flex space above
-     term-wrap, so we must not also subtract topbar/safe-top here. */
-  .shell.right-open .term,
-  .shell.right-dragging .term {
-    top: 2.3rem;
+  /* Reserve the shell selector only after the gesture commits, not mid-pan. */
+  .shell.right-open .term {
+    top: 2.7rem;
   }
 
   .sidebar {
@@ -2023,13 +2147,76 @@ textarea {
     transform: translateX(calc(100% - var(--right-x, 0px)));
     background: transparent;
     pointer-events: none;
-    transition: transform 0.2s ease;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 25;
   }
 
   .right-panel > * {
     pointer-events: auto;
   }
+
+  .terminal-preview {
+    position: absolute;
+    inset: 0;
+    background: #101010;
+    overflow: hidden;
+    pointer-events: none;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .terminal-preview-agent {
+    transform: translateX(calc(0px - var(--right-x)));
+  }
+
+  /* Soften both viewports during the scrub, then clear the destination.
+     Filter content only so panel edges and navigation stay crisp. */
+  .terminal-preview > * {
+    transition: filter 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .terminal-preview-agent > * {
+    filter: blur(var(--agent-preview-blur, 0px));
+  }
+
+  .terminal-preview-shell > * {
+    filter: blur(var(--shell-preview-blur, 8px));
+  }
+
+  .terminal-preview-shell {
+    padding-top: 2.7rem;
+    transform: translateX(calc(100% - var(--right-x)));
+    border-left: 1px solid var(--border);
+  }
+
+  .terminal-preview-screen {
+    width: 100%;
+    height: 100%;
+    padding: 0.25rem;
+    overflow: hidden;
+  }
+
+  .terminal-preview-screen .xterm,
+  .terminal-preview-screen .xterm-viewport {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  .terminal-preview-empty {
+    display: flex;
+    height: 100%;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  .terminal-preview-icon { width: 1.6rem; height: 1.6rem; }
+  .terminal-preview-empty small { font-size: 0.78rem; }
+  .terminal-panning > .term { opacity: 0; }
+  .shell.dragging .terminal-preview { transition: none; }
+  .shell.dragging .terminal-preview > * { transition: none; }
 
   .right-panel .right-topbar,
   .right-panel .terminals-chips {
@@ -2054,7 +2241,7 @@ textarea {
   }
 
   .main-shift {
-    transition: transform 0.2s ease;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* Keep terminal + keybar + soft KB on-screen while Agents chrome scrubs away. */
@@ -2062,7 +2249,7 @@ textarea {
   .dock,
   .soft-keyboard {
     transform: translateX(var(--right-x, 0px));
-    transition: transform 0.2s ease;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   /* Soft KB / dock sit above the transparent Terminals overlay. */
@@ -2180,4 +2367,76 @@ textarea {
 .ctx-item:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* Consistent keyboard affordances across application chrome. */
+button, input, select, textarea {
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+button:not(:disabled) { cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+button:disabled { cursor: default; }
+.dialog-overlay { backdrop-filter: blur(5px); }
+.dialog-panel .field { margin-bottom: 0.2rem; }
+.dialog-panel .field > span { text-transform: none; letter-spacing: 0; font-size: 0.8rem; }
+.dialog-panel .dialog-title { font-size: 1.3rem; }
+.dialog-panel .dialog-actions {
+  margin-top: 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.dialog-panel .sheet-primary { background: var(--accent); color: #151c28; border-color: var(--accent); }
+.dialog-panel .sheet-primary:hover:not(:disabled) { background: #b5c7e9; }
+.dialog-panel .kind.active { box-shadow: inset 0 0 0 1px var(--accent); }
+.terminal-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem;
+  background: #101010;
+}
+.terminal-empty-icon { width: 2rem; height: 2rem; color: var(--muted); margin-bottom: 1rem; }
+.terminal-empty h1 { margin: 0; font-size: clamp(1.25rem, 3vw, 1.75rem); letter-spacing: -0.04em; font-weight: 500; }
+.terminal-empty p { color: var(--muted); font-size: 0.85rem; line-height: 1.6; margin: 0.75rem 0 1.25rem; }
+.terminal-empty .sheet-primary { width: auto; padding-inline: 1.1rem; }
+.terminal-panning > .terminal-empty { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.topbar-context {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+.topbar-add-label { display: none; }
+@media (min-width: 768px) {
+  .topbar { padding-inline: 1rem; min-height: 3.25rem; }
+  .topbar-title-row { gap: 0.8rem; }
+  .topbar-context { display: block; border-left: 1px solid var(--border); padding-left: 0.8rem; }
+  .topbar-add { display: inline-flex; justify-content: center; gap: 0.4rem; width: auto; padding: 0 0.65rem; border-color: var(--border); }
+  .topbar-add-label { display: inline; font-size: 0.75rem; font-weight: 500; }
+}
+
+@media (max-height: 650px) {
+  .dialog-panel { gap: 0.65rem; padding: 1rem; max-height: calc(100dvh - 1.5rem); }
+  .dialog-panel .dialog-sub { font-size: 0.78rem; }
+  .dialog-panel .dialog-actions { padding-top: 0.65rem; }
+  .dialog-panel .kind { min-height: 2.25rem; }
 }
