@@ -250,6 +250,8 @@ export default function App() {
   let workspaceDialog: HTMLFormElement | undefined;
   const [lastAgentId, setLastAgentId] = createSignal("");
   const [lastShellId, setLastShellId] = createSignal("");
+  // The Terminals page owns its space, even when it has no selected shell.
+  const [terminalWorkspaceId, setTerminalWorkspaceId] = createSignal("");
   let swipeLock = false; // blocks xterm click/SGR while scrubbing pages/drawer
   const [isMobile, setIsMobile] = createSignal(
     typeof window !== "undefined" ? window.matchMedia(MOBILE_MQ).matches : false,
@@ -360,6 +362,7 @@ export default function App() {
   };
 
   const sendRaw = (data: string) => {
+    if (!selected()) return;
     // Always enqueue — never silently drop when WS is reconnecting.
     enqueueTerminalInput(data);
   };
@@ -697,7 +700,7 @@ export default function App() {
         return;
       }
     }
-    if (selected()) return;
+    if (selected() || rightOpen()) return;
     const match = resolveInitialTerminal(
       agentsLoaded ? agents() : null,
       panesLoaded ? panes() : null,
@@ -711,6 +714,7 @@ export default function App() {
     }
     const id = match.terminal_id || match.pane_id;
     if (!(match.agent || "").trim()) {
+      setTerminalWorkspaceId(match.workspace_id || "");
       setLastShellId(id);
       setRightOpen(true);
       setRightX(pageWidth());
@@ -848,6 +852,7 @@ export default function App() {
   // Prefer the selected pane's workspace — herdr's workspace.focused often
   // lags behind client-side selection, which made Terminals show an empty list.
   const focusedWorkspaceId = createMemo(() => {
+    if (rightOpen() && terminalWorkspaceId()) return terminalWorkspaceId();
     const sel = selected();
     if (sel) {
       const fromPane =
@@ -1145,6 +1150,7 @@ export default function App() {
 
   const openDrawer = () => {
     // Mutually exclusive with Terminals peer.
+    if (rightOpen()) closeRight();
     setRightOpen(false);
     setRightDragging(false);
     setRightX(0);
@@ -1174,6 +1180,9 @@ export default function App() {
     // An explicit selection wins over any still-pending startup restoration.
     pendingRestore = "";
     pendingDeepLink = null;
+    setRightOpen(false);
+    setRightDragging(false);
+    setRightX(0);
     setSelected(id);
     // No status refresh here: selection highlight is client-side, and a
     // refresh execs `herdr` right as the new takeover stream connects.
@@ -1297,17 +1306,25 @@ export default function App() {
     }
   };
 
-  const selectShell = (pane: Agent) => {
-    const id = agentId(pane);
+  const selectShell = (pane: Pick<Agent, "terminal_id" | "pane_id" | "workspace_id" | "tab_id">) => {
+    const id = pane.terminal_id || pane.pane_id;
     if (!id) return;
+    pendingRestore = "";
+    pendingDeepLink = null;
+    setTerminalWorkspaceId(pane.workspace_id || focusedWorkspaceId());
     setLastShellId(id);
-    selectAgent(id);
+    setSelected(id);
+    if (isMobile()) closeDrawer();
     if (pane.tab_id) void focusTab(pane.tab_id).catch(() => {});
   };
 
   const focusRememberedShell = () => {
     const shells = focusedShells();
-    if (!shells.length) return;
+    if (!shells.length) {
+      // Never display the previous space's shell (or the agent) on this page.
+      setSelected("");
+      return;
+    }
     const remembered = lastShellId();
     const match =
       (remembered && shells.find((p) => agentId(p) === remembered)) ||
@@ -1328,18 +1345,16 @@ export default function App() {
     try {
       const res = await createTab({ workspace_id: wsId, focus: true });
       const id = res.terminal_id || res.pane_id;
-      if (id) {
-        setLastShellId(id);
-        selectAgent(id);
+      if (id && rightOpen() && terminalWorkspaceId() === wsId) {
+        selectShell({ ...res, workspace_id: wsId });
       }
       scheduleStatusRefresh(200);
       await refreshPanes(true);
       if (id) {
-        setLastShellId(id);
-        selectAgent(id);
-      } else if (res.pane_id) {
-        const match = panes().find((p) => p.pane_id === res.pane_id);
-        if (match) selectShell(match);
+        // Don't steal focus if the user changed pages/spaces during creation.
+        if (rightOpen() && terminalWorkspaceId() === wsId) {
+          selectShell({ ...res, workspace_id: wsId });
+        }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1378,6 +1393,10 @@ export default function App() {
       const isAgentPane = agents().some((a) => agentId(a) === cur);
       if (isAgentPane) setLastAgentId(cur);
     }
+    const wsId = focusedWorkspaceId();
+    setTerminalWorkspaceId(wsId);
+    pendingRestore = "";
+    pendingDeepLink = null;
     setDrawerOpen(false);
     setDrawerDragging(false);
     setDrawerX(0);
@@ -1387,7 +1406,7 @@ export default function App() {
     // Use known panes immediately; refreshing must not delay the page pan.
     focusRememberedShell();
     void refreshPanes(true).then(() => {
-      if (rightOpen()) focusRememberedShell();
+      if (rightOpen() && terminalWorkspaceId() === wsId) focusRememberedShell();
     });
   };
 
@@ -1400,6 +1419,9 @@ export default function App() {
     const prev = lastAgentId();
     if (prev && agents().some((a) => agentId(a) === prev)) {
       selectAgent(prev);
+    } else {
+      const fallback = agents().find((a) => a.workspace_id === terminalWorkspaceId());
+      selectAgent(fallback ? agentId(fallback) : "");
     }
   };
 
@@ -2138,7 +2160,6 @@ export default function App() {
       setIsMobile(mobile);
       if (!mobile) {
         closeDrawer();
-        closeRight();
       }
     };
     onMq();
@@ -2426,7 +2447,12 @@ export default function App() {
       disconnect();
       return;
     }
-    if (id && termReady()) connect(id);
+    if (!id) {
+      disconnect();
+      setPendingPreview(false);
+      return;
+    }
+    if (termReady()) connect(id);
   });
 
   createEffect(() => {
@@ -2877,18 +2903,18 @@ export default function App() {
               </div>
             </Show>
             <div class="topbar-title-row">
-              <div class="topbar-title">Agents</div>
+              <div class="topbar-title">{rightOpen() && !isMobile() ? "Terminals" : "Agents"}</div>
               <Show when={current()}>
                 {(a) => <span class="topbar-context">{liveAgentWorkspace(a())} / {agentLabel(a())}</span>}
               </Show>
               <button
                 type="button"
                 class="topbar-add"
-                aria-label="New agent"
-                title="New agent"
-                onClick={(e) => openCreateAgent(undefined, e)}
+                aria-label={rightOpen() && !isMobile() ? "New shell" : "New agent"}
+                title={rightOpen() && !isMobile() ? "New shell" : "New agent"}
+                onClick={(e) => rightOpen() && !isMobile() ? void createOrFocusShell() : openCreateAgent(undefined, e)}
               >
-                +<span class="topbar-add-label">New agent</span>
+                +<span class="topbar-add-label">{rightOpen() && !isMobile() ? "New shell" : "New agent"}</span>
               </button>
             </div>
             <div class="top-right">
@@ -2904,7 +2930,7 @@ export default function App() {
                   Reclaim
                 </button>
               </Show>
-              <Show when={current()}>
+              <Show when={!rightOpen() && current()}>
                 {(a) => (
                   <div class="status" data-status={a().agent_status}>
                     {a().agent_status}
@@ -2934,7 +2960,7 @@ export default function App() {
           </Show>
 
           <div class="term-wrap" classList={{ "terminal-panning": isMobile() && (rightDragging() || panAnimating() || pendingPreview()) }}>
-            <div class="term" ref={termHost} />
+            <div class="term" ref={termHost} style={{ visibility: selected() ? "visible" : "hidden" }} />
             <Show when={isMobile() && (rightDragging() || panAnimating() || pendingPreview())}>
               <div class="terminal-preview terminal-preview-agent" aria-hidden="true">
                 <Show when={agentPreview()} fallback={<div class="terminal-preview-empty">Your agent terminal</div>}>
@@ -2950,11 +2976,19 @@ export default function App() {
             <Show when={!selected()}>
               <div class="terminal-empty">
                 <IconTerminal class="terminal-empty-icon" />
-                <h1>Your workspace, anywhere.</h1>
-                <p>Select an agent to connect to its live terminal,<br />or create one to get started.</p>
-                <button type="button" class="sheet-primary" onClick={(e) => workspaces().length ? openCreateAgent(undefined, e) : openCreateWorkspace()}>
-                  {workspaces().length ? "New agent" : "New workspace"}
-                </button>
+                <Show when={rightOpen()} fallback={<>
+                  <h1>Your workspace, anywhere.</h1>
+                  <p>Select an agent to connect to its live terminal,<br />or create one to get started.</p>
+                  <button type="button" class="sheet-primary" onClick={(e) => workspaces().length ? openCreateAgent(undefined, e) : openCreateWorkspace()}>
+                    {workspaces().length ? "New agent" : "New workspace"}
+                  </button>
+                </>}>
+                  <h1>No terminals yet</h1>
+                  <p>Start a shell in this space to get going.</p>
+                  <button type="button" class="sheet-primary" onClick={() => void createOrFocusShell()}>
+                    New shell
+                  </button>
+                </Show>
               </div>
             </Show>
           </div>

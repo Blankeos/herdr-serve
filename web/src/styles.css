@@ -2241,6 +2241,12 @@ textarea {
   background: color-mix(in srgb, var(--accent) 18%, #141414);
 }
 
+/* Keep keyboard focus inside the pill: the scroll row clips outer outlines. */
+.term-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .term-chip-add {
   width: 1.7rem;
   max-width: none;
