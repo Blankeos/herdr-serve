@@ -3,6 +3,48 @@
 All notable changes to this project will be documented in this file.
 
 
+## [0.0.2] - 2026-10-04
+
+
+### Bug Fixes
+
+- *(web)* Always create new shell on '+' click and unblock terminal interaction when right panel opens by Blankeos
+
+- *(typing)* Better keyboard capture w/ soft-keyboard by Blankeos
+
+- *(web)* Make soft keyboard multitouch reliable and initialize hardware cursor via VT sequences by Blankeos
+
+- *(terminal)* Preserve relay-owned scroll behavior by Blankeos
+
+- *(web)* Keep terminal selection scoped to the active workspace by Blankeos
+
+
+### Features
+
+- Add delete actions for agents, workspaces, and panes with context menus by Blankeos
+
+- Add web push notifications, photo uploads, PWA branding, and mobile keyboard/cursor improvements by Blankeos
+
+- *(web)* Mobile UX improvements for notifications, photo upload, and terminal cursor by Blankeos
+
+- *(web)* Polish workspace activity and mobile terminal navigation by Blankeos
+
+- *(web)* Default to native keyboard and contain mobile scrolling by Blankeos
+
+- Improve context menus and native text replacement by Blankeos
+
+- *(web)* Add responsive sidebar panels and mobile bottom sheet by Blankeos
+
+- *(web)* Improve sidebar controls and settings dialogs by Blankeos
+
+
+### Miscellaneous Tasks
+
+- Better npm publish by Blankeos
+
+- *(release)* Refuse tagging unless on main by Blankeos
+
+
 ## [0.0.1] - 2026-08-22
 
 
